@@ -30,8 +30,8 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
     return macd, macd_signal
 
 # 1. Setup the Webpage
-st.set_page_config(page_title="Ramani's Wealth Report", page_icon="📊", layout="wide")
-st.title("📊 Ramani's Wealth Report")
+st.set_page_config(page_title="Strategic Wealth Report", page_icon="📊", layout="wide")
+st.title("📊 Strategic Wealth Report")
 st.write("Comprehensive Portfolio Analysis & Action Plan")
 
 # 2. File Uploader
