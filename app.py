@@ -49,8 +49,8 @@ if uploaded_file is not None:
             
         header_row_idx = 0
         for idx, row in df_raw.iterrows():
-            # THE FIX: Safely convert the row to a list of strings, join them, then lowercase
-            row_str = " ".join(row.astype(str).tolist()).lower()
+            # THE BULLETPROOF FIX: Pure Python safe conversion of each cell
+            row_str = " ".join([str(cell).lower() for cell in row.values if pd.notna(cell)])
             if 'symbol' in row_str or 'instrument' in row_str:
                 header_row_idx = idx
                 break
@@ -230,7 +230,7 @@ if uploaded_file is not None:
             if exit_risk:
                 st.error(f"**High-Risk Exits**\n\nGiven extreme volatility or broken 200-EMA trends, consider exiting **{', '.join(exit_risk)}** to protect capital.")
 
-        # TAB 3: ANALYSIS & RISK
+        # TAB 3: ANALYSIS & Risk
         with tab3:
             colA, colB = st.columns(2)
             with colA:
