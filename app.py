@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import time
 
 # --- CUSTOM MATH FUNCTIONS ---
 def calculate_rsi(prices, window=14):
@@ -183,27 +184,30 @@ if uploaded_file is not None:
                     
                     pivot, s1, r1 = calculate_pivots(hist)
 
-                    # Fundamentals & Safe Dividend
+                    # Fundamentals & Safe Dividend (WITH RETRY LOOP)
                     is_high_quality = True
-                    try:
-                        info = ticker.info
-                        if info:
-                            sector = info.get('sector', 'Unknown')
-                            
-                            # Dividend Safeguard against crazy YF data errors
-                            div_yield = info.get('dividendYield', 0) or 0
-                            if div_yield > 0.20: 
-                                div_yield = div_yield / 100
-                            if div_yield > 0.20:
-                                div_yield = 0 
+                    for attempt in range(3):  # Try 3 times to bypass Yahoo API blocks
+                        try:
+                            info = ticker.info
+                            if info and ('sector' in info or 'dividendYield' in info):
+                                sector = info.get('sector', 'Unknown')
                                 
-                            div_amount = current_val * div_yield
-                            
-                            roe = info.get('returnOnEquity', 0) or 0
-                            fcf = info.get('freeCashflow', 0) or 0
-                            if info.get('returnOnEquity') is not None:
-                                is_high_quality = (roe >= min_roe) and (fcf > 0)
-                    except: pass
+                                # Dividend Safeguard
+                                div_yield = info.get('dividendYield', 0) or 0
+                                if div_yield > 0.20: 
+                                    div_yield = div_yield / 100
+                                if div_yield > 0.20:
+                                    div_yield = 0 
+                                    
+                                div_amount = current_val * div_yield
+                                
+                                roe = info.get('returnOnEquity', 0) or 0
+                                fcf = info.get('freeCashflow', 0) or 0
+                                if info.get('returnOnEquity') is not None:
+                                    is_high_quality = (roe >= min_roe) and (fcf > 0)
+                                break # Success! Break out of the retry loop
+                        except Exception:
+                            time.sleep(0.5) # Wait half a second and try knocking again
                     
                     # Unified Mechanical Logic
                     verdict = "Hold"
@@ -247,9 +251,9 @@ if uploaded_file is not None:
                         action_details = "Broken 200-EMA"
 
             except Exception:
-                pass # The app will gracefully fall back to the Zerodha CSV variables initialized above
+                pass # Gracefully fall back to the Zerodha CSV variables
             
-            # 3. UNCONDITIONAL TOTALS UPDATE (Guarantees money is never lost in calculation)
+            # 3. UNCONDITIONAL TOTALS UPDATE
             total_invested += invested_val
             total_current_val += current_val
             expected_dividend += div_amount
@@ -276,6 +280,7 @@ if uploaded_file is not None:
             progress_bar.progress((index + 1) / total_stocks)
             
         status_text.empty()
+        guaranteed_total_invested = (df_clean['Average Price'] * df_clean['Quantity Available']).sum()
         
         # --- BUILD THE UI TABS ---
         df_res = pd.DataFrame(portfolio_results)
@@ -284,8 +289,8 @@ if uploaded_file is not None:
             st.error("Fatal Error: Could not parse any data.")
             st.stop()
 
-        total_pl = total_current_val - total_invested
-        total_pl_pct = (total_pl / total_invested) * 100 if total_invested > 0 else 0
+        total_pl = total_current_val - guaranteed_total_invested
+        total_pl_pct = (total_pl / guaranteed_total_invested) * 100 if guaranteed_total_invested > 0 else 0
         
         st.divider()
         col_export, _ = st.columns([1, 4])
@@ -300,7 +305,7 @@ if uploaded_file is not None:
             col1, col2, col3 = st.columns([2, 2, 1])
             with col1:
                 st.metric("CURRENT VALUE", f"₹ {total_current_val:,.2f}")
-                st.metric("Invested", f"₹ {total_invested:,.2f}")
+                st.metric("Invested (From File)", f"₹ {guaranteed_total_invested:,.2f}")
             with col2:
                 st.metric("Total Returns", f"₹ {total_pl:,.2f} ({total_pl_pct:.2f}%)", delta=f"{total_pl_pct:.2f}%")
                 st.metric("Expected Dividend (1Y)", f"₹ {expected_dividend:,.2f}") 
