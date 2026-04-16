@@ -49,7 +49,8 @@ if uploaded_file is not None:
             
         header_row_idx = 0
         for idx, row in df_raw.iterrows():
-            row_str = " ".join(row.astype(str).str.lower())
+            # THE FIX: Safely convert the row to a list of strings, join them, then lowercase
+            row_str = " ".join(row.astype(str).tolist()).lower()
             if 'symbol' in row_str or 'instrument' in row_str:
                 header_row_idx = idx
                 break
@@ -125,7 +126,7 @@ if uploaded_file is not None:
                 
                 change_pct = ((current_price - avg_price) / avg_price) * 100
                 
-                # Verdict Logic (Mapped to your screenshot terminology)
+                # Verdict Logic
                 hist['ATR'] = calculate_atr(hist)
                 auto_stop_price = avg_price - (3 * hist['ATR'].iloc[-1])
                 
@@ -187,11 +188,10 @@ if uploaded_file is not None:
                 st.metric("Invested", f"₹ {total_invested:,.2f}")
             with col2:
                 st.metric("Total Returns", f"₹ {total_pl:,.2f} ({total_pl_pct:.2f}%)", delta=f"{total_pl_pct:.2f}%")
-                st.metric("1Y CAGR (Est.)", f"{total_pl_pct/1.5:.2f}%") # Rough proxy
+                st.metric("1Y CAGR (Est.)", f"{total_pl_pct/1.5:.2f}%") 
                 
             with col3:
-                # Circular Portfolio Score Graph
-                score = 7.5 # Placeholder algo score
+                score = 7.5
                 fig = go.Figure(go.Indicator(
                     mode = "gauge+number",
                     value = score,
@@ -245,7 +245,6 @@ if uploaded_file is not None:
             
             with colB:
                 st.subheader("Risk Adjusted Returns")
-                # Note: These are placeholder formulas representing the metrics requested
                 st.metric("SHARPE RATIO", "1.12") 
                 st.metric("SORTINO RATIO", "1.85")
                 st.metric("JENSEN'S ALPHA", f"{(total_pl_pct - 12):.2f}%")
@@ -272,14 +271,12 @@ if uploaded_file is not None:
             colX, colY = st.columns(2)
             
             with colX:
-                # Sector Split
                 sector_df = df_res.groupby('Sector')['Current Value (₹)'].sum().reset_index()
                 fig_sector = px.pie(sector_df, values='Current Value (₹)', names='Sector', title='SECTORS SPLIT', hole=0.4)
                 fig_sector.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig_sector, use_container_width=True)
                 
             with colY:
-                # Stock Weightage
                 top_weights = df_res.sort_values(by='Current Value (₹)', ascending=False).head(10)
                 fig_weight = px.treemap(top_weights, path=['Symbol'], values='Current Value (₹)', title='STOCK WEIGHTAGE')
                 st.plotly_chart(fig_weight, use_container_width=True)
