@@ -89,10 +89,19 @@ if uploaded_file is not None:
         }
         df_holdings = df_holdings.rename(columns=rename_map)
         df_clean = df_holdings.dropna(subset=['Symbol', 'Average Price']).copy()
+        
+        # Ensure Numeric Columns
         df_clean['Quantity Available'] = pd.to_numeric(df_clean['Quantity Available'], errors='coerce')
+        df_clean['Average Price'] = pd.to_numeric(df_clean['Average Price'], errors='coerce')
         df_clean = df_clean[df_clean['Quantity Available'] > 0]
         
-        guaranteed_total_invested = (df_clean['Average Price'] * df_clean['Quantity Available']).sum()
+        # Find Fallback Closing Price Column (If YFinance fails)
+        fallback_col = None
+        for col in ['Previous Closing Price', 'LTP', 'Current Price', 'Close Price']:
+            if col in df_clean.columns:
+                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+                fallback_col = col
+                break
     
     # --- ANALYSIS ENGINE ---
     if st.button("🚀 Execute Master Scan", type="primary"):
@@ -101,6 +110,9 @@ if uploaded_file is not None:
         status_text = st.empty()
         
         total_stocks = len(df_clean)
+        
+        # Safely track global metrics outside the YFinance loop
+        total_invested = 0
         total_current_val = 0
         expected_dividend = 0
         
@@ -109,14 +121,19 @@ if uploaded_file is not None:
             avg_price = float(row['Average Price'])
             quantity = int(row['Quantity Available'])
             yf_symbol = f"{symbol}.NS"
+            
+            # 1. Establish absolute baseline metrics using Zerodha data
             invested_val = avg_price * quantity
             
-            status_text.text(f"Scanning Quality & Technicals: {symbol} ({index + 1}/{total_stocks})...")
+            fallback_price = avg_price
+            if fallback_col and pd.notna(row[fallback_col]):
+                fallback_price = float(row[fallback_col])
+                
+            current_price = fallback_price # Default to Zerodha price
+            current_val = current_price * quantity
+            change_pct = ((current_price - avg_price) / avg_price) * 100 if avg_price > 0 else 0
             
-            # Fallback variables in case of total failure
-            current_price = 0
-            current_val = 0
-            change_pct = 0
+            # Default empty strings for UI safety
             sector = "Unknown"
             roe = 0
             fcf = 0
@@ -124,110 +141,119 @@ if uploaded_file is not None:
             vol_spike = "-"
             s1 = 0
             r1 = 0
-            category = "Data Error"
-            verdict = "Fetch Failed"
-            action_details = "Network/YF Blocked"
+            div_amount = 0
+            category = "Data Fetch Error"
+            verdict = "Offline (Used CSV Price)"
+            action_details = "YF Network Block / Not Found"
             
+            status_text.text(f"Scanning Quality & Technicals: {symbol} ({index + 1}/{total_stocks})...")
+            
+            # 2. Attempt Live Yahoo Finance Fetch
             try:
-                # 1. FETCH TECHNICAL DATA (Highly Reliable)
                 ticker = yf.Ticker(yf_symbol)
                 hist = ticker.history(period="1y")
                 
-                if len(hist) < 50:
-                    raise ValueError("Not enough historical data")
+                if len(hist) >= 50:
+                    # Upgrade to Live Price
+                    current_price = float(hist['Close'].iloc[-1])
+                    current_val = current_price * quantity
+                    change_pct = ((current_price - avg_price) / avg_price) * 100 if avg_price > 0 else 0
                     
-                current_price = float(hist['Close'].iloc[-1])
-                current_val = current_price * quantity
-                total_current_val += current_val  # Safe update!
-                
-                change_pct = ((current_price - avg_price) / avg_price) * 100
-                
-                hist['RSI'] = calculate_rsi(hist['Close'])
-                current_rsi = float(hist['RSI'].iloc[-1])
-                hist['EMA_50'] = hist['Close'].ewm(span=50, adjust=False).mean()
-                hist['EMA_200'] = hist['Close'].ewm(span=200, adjust=False).mean()
-                long_term_bullish = current_price > float(hist['EMA_200'].iloc[-1])
-                
-                hist['ATR'] = calculate_atr(hist)
-                auto_stop_price = avg_price - (3 * float(hist['ATR'].iloc[-1]))
-                
-                macd, macd_signal = calculate_macd(hist['Close'])
-                macd_bullish = float(macd.iloc[-1]) > float(macd_signal.iloc[-1])
-                macd_status = "Bullish" if macd_bullish else "Bearish"
-                
-                hist['Avg_Vol_20'] = hist['Volume'].rolling(window=20).mean()
-                current_vol = float(hist['Volume'].iloc[-1])
-                avg_vol = float(hist['Avg_Vol_20'].iloc[-1])
-                high_volume_dump = False
-                if pd.notna(avg_vol) and avg_vol > 0:
-                    high_volume_dump = (current_price < float(hist['Open'].iloc[-1])) and (current_vol > (avg_vol * 1.5))
-                vol_spike = "Yes" if high_volume_dump else "Normal"
-                
-                pivot, s1, r1 = calculate_pivots(hist)
+                    # Technicals
+                    hist['RSI'] = calculate_rsi(hist['Close'])
+                    current_rsi = float(hist['RSI'].iloc[-1])
+                    hist['EMA_50'] = hist['Close'].ewm(span=50, adjust=False).mean()
+                    hist['EMA_200'] = hist['Close'].ewm(span=200, adjust=False).mean()
+                    long_term_bullish = current_price > float(hist['EMA_200'].iloc[-1])
+                    
+                    hist['ATR'] = calculate_atr(hist)
+                    auto_stop_price = avg_price - (3 * float(hist['ATR'].iloc[-1]))
+                    
+                    macd, macd_signal = calculate_macd(hist['Close'])
+                    macd_bullish = float(macd.iloc[-1]) > float(macd_signal.iloc[-1])
+                    macd_status = "Bullish" if macd_bullish else "Bearish"
+                    
+                    hist['Avg_Vol_20'] = hist['Volume'].rolling(window=20).mean()
+                    current_vol = float(hist['Volume'].iloc[-1])
+                    avg_vol = float(hist['Avg_Vol_20'].iloc[-1])
+                    high_volume_dump = False
+                    if pd.notna(avg_vol) and avg_vol > 0:
+                        high_volume_dump = (current_price < float(hist['Open'].iloc[-1])) and (current_vol > (avg_vol * 1.5))
+                    vol_spike = "Yes" if high_volume_dump else "Normal"
+                    
+                    pivot, s1, r1 = calculate_pivots(hist)
 
-                # 2. FETCH FUNDAMENTAL DATA (Quarantined Flaky API)
-                is_high_quality = True # Default to true so technical engine doesn't break
-                try:
-                    info = ticker.info
-                    if info:
-                        sector = info.get('sector', 'Unknown')
-                        div_yield = info.get('dividendYield', 0) or 0
-                        expected_dividend += current_val * div_yield
-                        
-                        roe = info.get('returnOnEquity', 0) or 0
-                        fcf = info.get('freeCashflow', 0) or 0
-                        
-                        if info.get('returnOnEquity') is not None:
-                            is_high_quality = (roe >= min_roe) and (fcf > 0)
-                except Exception:
-                    pass # Ignore Yahoo Finance fundamental block and proceed with technicals
-                
-                # 3. UNIFIED MECHANICAL LOGIC
-                verdict = "Hold"
-                category = "Stable"
-                action_details = "-"
-                
-                if current_price <= auto_stop_price:
-                    verdict = "Exit (Stop-Loss)"
-                    category = "Strategic Exit"
-                    action_details = f"Sell all {quantity} shares"
-                elif change_pct <= -15 and long_term_bullish:
-                    if high_volume_dump or (not macd_bullish and current_rsi > 40):
-                        verdict = "Pause Buy (Wait for Setup)"
-                        category = "Stable"
-                        action_details = "Volume Dump or Bearish MACD"
-                    elif is_high_quality:
-                        if change_pct <= -35: alloc_pct = 0.30
-                        elif change_pct <= -25: alloc_pct = 0.25
-                        else: alloc_pct = 0.10
-                        shares_to_buy = int((fresh_capital * alloc_pct) / current_price) if current_price > 0 else 0
-                        verdict = f"Scale In ({int(alloc_pct*100)}% Tranche)"
-                        category = "Accumulate"
-                        action_details = f"Buy {shares_to_buy} shares"
-                    else:
-                        verdict = "Value Trap (Fails Quality Filter)"
+                    # Fundamentals & Safe Dividend
+                    is_high_quality = True
+                    try:
+                        info = ticker.info
+                        if info:
+                            sector = info.get('sector', 'Unknown')
+                            
+                            # Dividend Safeguard against crazy YF data errors
+                            div_yield = info.get('dividendYield', 0) or 0
+                            if div_yield > 0.20: 
+                                div_yield = div_yield / 100
+                            if div_yield > 0.20:
+                                div_yield = 0 
+                                
+                            div_amount = current_val * div_yield
+                            
+                            roe = info.get('returnOnEquity', 0) or 0
+                            fcf = info.get('freeCashflow', 0) or 0
+                            if info.get('returnOnEquity') is not None:
+                                is_high_quality = (roe >= min_roe) and (fcf > 0)
+                    except: pass
+                    
+                    # Unified Mechanical Logic
+                    verdict = "Hold"
+                    category = "Stable"
+                    action_details = "-"
+                    
+                    if current_price <= auto_stop_price:
+                        verdict = "Exit (Stop-Loss)"
+                        category = "Strategic Exit"
+                        action_details = f"Sell all {quantity} shares"
+                    elif change_pct <= -15 and long_term_bullish:
+                        if high_volume_dump or (not macd_bullish and current_rsi > 40):
+                            verdict = "Pause Buy (Wait for Setup)"
+                            category = "Stable"
+                            action_details = "Volume Dump or Bearish MACD"
+                        elif is_high_quality:
+                            if change_pct <= -35: alloc_pct = 0.30
+                            elif change_pct <= -25: alloc_pct = 0.25
+                            else: alloc_pct = 0.10
+                            shares_to_buy = int((fresh_capital * alloc_pct) / current_price) if current_price > 0 else 0
+                            verdict = f"Scale In ({int(alloc_pct*100)}% Tranche)"
+                            category = "Accumulate"
+                            action_details = f"Buy {shares_to_buy} shares"
+                        else:
+                            verdict = "Value Trap (Fails Quality Filter)"
+                            category = "High-Risk Exit"
+                            action_details = f"ROE: {roe*100:.1f}%, FCF: {fcf}"
+                    elif change_pct >= 25 and current_rsi > 70:
+                        if change_pct >= 100: sell_pct = 1.0
+                        elif change_pct >= 60: sell_pct = 0.40
+                        elif change_pct >= 45: sell_pct = 0.30
+                        elif change_pct >= 35: sell_pct = 0.20
+                        else: sell_pct = 0.10
+                        shares_to_sell = max(1, int(quantity * sell_pct))
+                        verdict = f"Scale Out (Take Profit)"
+                        category = "Strategic Exit"
+                        action_details = f"Sell {shares_to_sell} shares"
+                    elif not long_term_bullish and change_pct < -20:
+                        verdict = "Exit (Weakness)"
                         category = "High-Risk Exit"
-                        action_details = f"ROE: {roe*100:.1f}%, FCF: {fcf}"
-                elif change_pct >= 25 and current_rsi > 70:
-                    if change_pct >= 100: sell_pct = 1.0
-                    elif change_pct >= 60: sell_pct = 0.40
-                    elif change_pct >= 45: sell_pct = 0.30
-                    elif change_pct >= 35: sell_pct = 0.20
-                    else: sell_pct = 0.10
-                    shares_to_sell = max(1, int(quantity * sell_pct))
-                    verdict = f"Scale Out (Take Profit)"
-                    category = "Strategic Exit"
-                    action_details = f"Sell {shares_to_sell} shares"
-                elif not long_term_bullish and change_pct < -20:
-                    verdict = "Exit (Weakness)"
-                    category = "High-Risk Exit"
-                    action_details = "Broken 200-EMA"
+                        action_details = "Broken 200-EMA"
 
-            except Exception as e:
-                # Triggers only if the stock is utterly unreadable by Yahoo (e.g., delisted)
-                pass
+            except Exception:
+                pass # The app will gracefully fall back to the Zerodha CSV variables initialized above
+            
+            # 3. UNCONDITIONAL TOTALS UPDATE (Guarantees money is never lost in calculation)
+            total_invested += invested_val
+            total_current_val += current_val
+            expected_dividend += div_amount
 
-            # Ensure row is written perfectly every time
             portfolio_results.append({
                 "Symbol": symbol,
                 "Sector": sector,
@@ -258,8 +284,8 @@ if uploaded_file is not None:
             st.error("Fatal Error: Could not parse any data.")
             st.stop()
 
-        total_pl = total_current_val - guaranteed_total_invested
-        total_pl_pct = (total_pl / guaranteed_total_invested) * 100 if guaranteed_total_invested > 0 else 0
+        total_pl = total_current_val - total_invested
+        total_pl_pct = (total_pl / total_invested) * 100 if total_invested > 0 else 0
         
         st.divider()
         col_export, _ = st.columns([1, 4])
@@ -274,7 +300,7 @@ if uploaded_file is not None:
             col1, col2, col3 = st.columns([2, 2, 1])
             with col1:
                 st.metric("CURRENT VALUE", f"₹ {total_current_val:,.2f}")
-                st.metric("Invested (From File)", f"₹ {guaranteed_total_invested:,.2f}")
+                st.metric("Invested", f"₹ {total_invested:,.2f}")
             with col2:
                 st.metric("Total Returns", f"₹ {total_pl:,.2f} ({total_pl_pct:.2f}%)", delta=f"{total_pl_pct:.2f}%")
                 st.metric("Expected Dividend (1Y)", f"₹ {expected_dividend:,.2f}") 
@@ -293,7 +319,7 @@ if uploaded_file is not None:
         with tab2:
             accumulate = df_res[df_res['Category'] == 'Accumulate']
             exits = df_res[df_res['Category'] == 'Strategic Exit']
-            errors = df_res[df_res['Category'] == 'Data Error']
+            errors = df_res[df_res['Category'] == 'Data Fetch Error']
             
             if not accumulate.empty:
                 st.success("**Scale In Opportunities (Passed Quality Filters & Tech Setup)**")
@@ -302,7 +328,7 @@ if uploaded_file is not None:
                 st.warning("**Scale Out / Stop-Loss Targets Hit**")
                 st.dataframe(exits[['Symbol', 'P&L (%)', 'Verdict', 'Action Details']], use_container_width=True)
             if not errors.empty:
-                st.error("**Data Fetch Errors (Check Tickers)**")
+                st.error("**Data Fetch Errors (Used Offline Zerodha Price)**")
                 st.dataframe(errors[['Symbol', 'Verdict', 'Action Details']], use_container_width=True)
 
         # TAB 3: TECHNICALS
