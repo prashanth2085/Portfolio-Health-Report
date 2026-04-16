@@ -92,7 +92,6 @@ if uploaded_file is not None:
         df_clean['Quantity Available'] = pd.to_numeric(df_clean['Quantity Available'], errors='coerce')
         df_clean = df_clean[df_clean['Quantity Available'] > 0]
         
-        # Calculate GUARANTEED Total Invested from raw file
         guaranteed_total_invested = (df_clean['Average Price'] * df_clean['Quantity Available']).sum()
     
     # --- ANALYSIS ENGINE ---
@@ -114,50 +113,76 @@ if uploaded_file is not None:
             
             status_text.text(f"Scanning Quality & Technicals: {symbol} ({index + 1}/{total_stocks})...")
             
+            # Fallback variables in case of total failure
+            current_price = 0
+            current_val = 0
+            change_pct = 0
+            sector = "Unknown"
+            roe = 0
+            fcf = 0
+            macd_status = "-"
+            vol_spike = "-"
+            s1 = 0
+            r1 = 0
+            category = "Data Error"
+            verdict = "Fetch Failed"
+            action_details = "Network/YF Blocked"
+            
             try:
+                # 1. FETCH TECHNICAL DATA (Highly Reliable)
                 ticker = yf.Ticker(yf_symbol)
                 hist = ticker.history(period="1y")
                 
                 if len(hist) < 50:
-                    raise ValueError("Not enough data")
+                    raise ValueError("Not enough historical data")
                     
-                info = ticker.info
-                current_price = hist['Close'].iloc[-1]
+                current_price = float(hist['Close'].iloc[-1])
                 current_val = current_price * quantity
+                total_current_val += current_val  # Safe update!
                 
-                total_current_val += current_val
-                
-                # Fundamentals
-                sector = info.get('sector', 'Unknown')
-                div_yield = info.get('dividendYield', 0) or 0
-                expected_dividend += current_val * div_yield
-                
-                roe = info.get('returnOnEquity', 0) or 0
-                fcf = info.get('freeCashflow', 0) or 0
-                is_high_quality = (roe >= min_roe) and (fcf > 0)
-                
-                # Technicals: RSI, EMA, ATR
-                hist['RSI'] = calculate_rsi(hist['Close'])
-                current_rsi = hist['RSI'].iloc[-1]
-                hist['EMA_50'] = hist['Close'].ewm(span=50, adjust=False).mean()
-                hist['EMA_200'] = hist['Close'].ewm(span=200, adjust=False).mean()
-                long_term_bullish = current_price > hist['EMA_200'].iloc[-1]
-                
-                hist['ATR'] = calculate_atr(hist)
-                auto_stop_price = avg_price - (3 * hist['ATR'].iloc[-1])
                 change_pct = ((current_price - avg_price) / avg_price) * 100
                 
-                # MACD, Volume, and Pivots
+                hist['RSI'] = calculate_rsi(hist['Close'])
+                current_rsi = float(hist['RSI'].iloc[-1])
+                hist['EMA_50'] = hist['Close'].ewm(span=50, adjust=False).mean()
+                hist['EMA_200'] = hist['Close'].ewm(span=200, adjust=False).mean()
+                long_term_bullish = current_price > float(hist['EMA_200'].iloc[-1])
+                
+                hist['ATR'] = calculate_atr(hist)
+                auto_stop_price = avg_price - (3 * float(hist['ATR'].iloc[-1]))
+                
                 macd, macd_signal = calculate_macd(hist['Close'])
-                macd_bullish = macd.iloc[-1] > macd_signal.iloc[-1]
+                macd_bullish = float(macd.iloc[-1]) > float(macd_signal.iloc[-1])
+                macd_status = "Bullish" if macd_bullish else "Bearish"
                 
                 hist['Avg_Vol_20'] = hist['Volume'].rolling(window=20).mean()
-                current_vol = hist['Volume'].iloc[-1]
-                high_volume_dump = (current_price < hist['Open'].iloc[-1]) and (current_vol > (hist['Avg_Vol_20'].iloc[-1] * 1.5))
+                current_vol = float(hist['Volume'].iloc[-1])
+                avg_vol = float(hist['Avg_Vol_20'].iloc[-1])
+                high_volume_dump = False
+                if pd.notna(avg_vol) and avg_vol > 0:
+                    high_volume_dump = (current_price < float(hist['Open'].iloc[-1])) and (current_vol > (avg_vol * 1.5))
+                vol_spike = "Yes" if high_volume_dump else "Normal"
                 
                 pivot, s1, r1 = calculate_pivots(hist)
+
+                # 2. FETCH FUNDAMENTAL DATA (Quarantined Flaky API)
+                is_high_quality = True # Default to true so technical engine doesn't break
+                try:
+                    info = ticker.info
+                    if info:
+                        sector = info.get('sector', 'Unknown')
+                        div_yield = info.get('dividendYield', 0) or 0
+                        expected_dividend += current_val * div_yield
+                        
+                        roe = info.get('returnOnEquity', 0) or 0
+                        fcf = info.get('freeCashflow', 0) or 0
+                        
+                        if info.get('returnOnEquity') is not None:
+                            is_high_quality = (roe >= min_roe) and (fcf > 0)
+                except Exception:
+                    pass # Ignore Yahoo Finance fundamental block and proceed with technicals
                 
-                # Unified Mechanical Logic
+                # 3. UNIFIED MECHANICAL LOGIC
                 verdict = "Hold"
                 category = "Stable"
                 action_details = "-"
@@ -198,44 +223,29 @@ if uploaded_file is not None:
                     category = "High-Risk Exit"
                     action_details = "Broken 200-EMA"
 
-                portfolio_results.append({
-                    "Symbol": symbol,
-                    "Sector": sector,
-                    "Quantity": quantity,
-                    "Avg Price": round(avg_price, 2),
-                    "CMP": round(current_price, 2),
-                    "Invested (₹)": round(invested_val, 2),
-                    "Current Value (₹)": round(current_val, 2),
-                    "P&L (%)": round(change_pct, 2),
-                    "ROE (%)": round(roe * 100, 2),
-                    "MACD": "Bullish" if macd_bullish else "Bearish",
-                    "Vol Spike": "Yes" if high_volume_dump else "Normal",
-                    "Support (S1)": round(s1, 2),
-                    "Resistance (R1)": round(r1, 2),
-                    "Category": category,
-                    "Verdict": verdict,
-                    "Action Details": action_details
-                })
             except Exception as e:
-                # GRACEFUL FAILURE: Ensures the table never breaks
-                portfolio_results.append({
-                    "Symbol": symbol,
-                    "Sector": "Unknown",
-                    "Quantity": quantity,
-                    "Avg Price": round(avg_price, 2),
-                    "CMP": 0,
-                    "Invested (₹)": round(invested_val, 2),
-                    "Current Value (₹)": 0,
-                    "P&L (%)": 0,
-                    "ROE (%)": 0,
-                    "MACD": "-",
-                    "Vol Spike": "-",
-                    "Support (S1)": 0,
-                    "Resistance (R1)": 0,
-                    "Category": "Data Error",
-                    "Verdict": "Fetch Failed",
-                    "Action Details": "Check if .NS or .BO needed"
-                })
+                # Triggers only if the stock is utterly unreadable by Yahoo (e.g., delisted)
+                pass
+
+            # Ensure row is written perfectly every time
+            portfolio_results.append({
+                "Symbol": symbol,
+                "Sector": sector,
+                "Quantity": quantity,
+                "Avg Price": round(avg_price, 2),
+                "CMP": round(current_price, 2),
+                "Invested (₹)": round(invested_val, 2),
+                "Current Value (₹)": round(current_val, 2),
+                "P&L (%)": round(change_pct, 2),
+                "ROE (%)": round(roe * 100, 2),
+                "MACD": macd_status,
+                "Vol Spike": vol_spike,
+                "Support (S1)": round(s1, 2),
+                "Resistance (R1)": round(r1, 2),
+                "Category": category,
+                "Verdict": verdict,
+                "Action Details": action_details
+            })
             
             progress_bar.progress((index + 1) / total_stocks)
             
@@ -244,9 +254,8 @@ if uploaded_file is not None:
         # --- BUILD THE UI TABS ---
         df_res = pd.DataFrame(portfolio_results)
         
-        # Fallback if dataframe is completely empty (Network block)
         if df_res.empty:
-            st.error("Network Error: Could not fetch any data. Please check your internet or try again later.")
+            st.error("Fatal Error: Could not parse any data.")
             st.stop()
 
         total_pl = total_current_val - guaranteed_total_invested
