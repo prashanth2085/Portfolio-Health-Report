@@ -45,14 +45,11 @@ def calculate_pivots(hist):
 # --- STEALTH DATA FETCHER (CACHED FOR 15 MINUTES) ---
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_market_data(yf_symbol):
-    # 1. Micro-delay to bypass Yahoo Finance Bot-Detection IP Bans
     time.sleep(0.25) 
-    
     ticker = yf.Ticker(yf_symbol)
     hist = ticker.history(period="1y")
     
     info = {}
-    # 2. Triple-knock retry loop for fundamental data
     for attempt in range(3):
         try:
             info = ticker.info
@@ -64,65 +61,84 @@ def fetch_market_data(yf_symbol):
     return hist, info
 
 # --- CAPITAL CALCULATOR FUNCTION ---
-def calculate_monday_capital(csv_data, target_capital=200000):
+def calculate_monday_capital(csv_data, target_capital):
     st.subheader("Capital Generation Projection")
     
     with st.spinner('Fetching real-time NSE prices...'):
-        df = pd.read_csv(io.StringIO(csv_data), sep=',\s*', engine='python')
-        df['Shares'] = df['Action Details'].apply(lambda x: int(re.search(r'\d+', x).group()))
-        df['Ticker'] = df['Symbol'] + '.NS'
-        df['P&L (%)'] = pd.to_numeric(df['P&L (%)'])
-        
-        tickers = df['Ticker'].tolist()
-        data = yf.download(tickers, period="1d", progress=False)
-        
-        if isinstance(data.columns, pd.MultiIndex):
-            prices = data['Close'].iloc[-1]
-        else:
-            prices = pd.Series({tickers[0]: data['Close'].iloc[-1]})
+        try:
+            # 1. Clean the incoming data to prevent KeyErrors
+            df = pd.read_csv(io.StringIO(csv_data), sep=',')
+            df.columns = df.columns.str.strip() # Strips invisible spaces from headers
             
-        df['Current Price'] = df['Ticker'].map(prices)
-        df['Projected Value (INR)'] = df['Shares'] * df['Current Price']
-        
-        exits_df = df[df['Verdict'].str.contains('Exit')]
-        total_exit_cash = exits_df['Projected Value (INR)'].sum()
-        
-        st.metric(label="Mandatory Exit Capital (Stop-Losses)", value=f"₹{total_exit_cash:,.2f}")
-        
-        current_capital = total_exit_cash
-        scale_outs_df = df[df['Verdict'].str.contains('Scale Out')].sort_values(by='P&L (%)', ascending=True)
-        
-        hold_back_list = []
-        
-        if current_capital >= target_capital:
-            st.success("Target met entirely by Exits! You can hold back ALL Scale Out shares.")
-            hold_back_list.append(scale_outs_df)
-        else:
-            st.warning(f"Shortfall from Exits: ₹{target_capital - current_capital:,.2f}. Selling weakest Scale Outs to bridge the gap...")
-            for index, row in scale_outs_df.iterrows():
-                if current_capital < target_capital:
-                    current_capital += row['Projected Value (INR)']
-                    st.write(f"Sold {row['Shares']} shares of **{row['Symbol']}** (+{row['P&L (%)']}%) -> Added ₹{row['Projected Value (INR)']:,.2f}")
-                else:
-                    hold_back_list.append(row)
-        
-        st.metric(label="Total Capital Ready for Monday", value=f"₹{current_capital:,.2f}", delta=f"₹{current_capital - target_capital:,.2f} over target")
-        
-        if hold_back_list:
-            st.subheader("Shares to Hold Back (Let Run)")
-            if isinstance(hold_back_list[0], pd.DataFrame):
-                held_df = hold_back_list[0]
+            # 2. Safety check for the column
+            if 'Action Details' not in df.columns:
+                st.error(f"Could not find the 'Action Details' column. Please check your pasted text. Columns found: {', '.join(df.columns)}")
+                return
+
+            # 3. Safely extract numbers
+            def extract_shares(text):
+                match = re.search(r'\d+', str(text))
+                return int(match.group()) if match else 0
+                
+            df['Shares'] = df['Action Details'].apply(extract_shares)
+            df['Ticker'] = df['Symbol'].str.strip() + '.NS'
+            df['P&L (%)'] = pd.to_numeric(df['P&L (%)'], errors='coerce').fillna(0)
+            
+            tickers = df['Ticker'].tolist()
+            data = yf.download(tickers, period="1d", progress=False)
+            
+            if isinstance(data.columns, pd.MultiIndex):
+                prices = data['Close'].iloc[-1]
             else:
-                held_df = pd.DataFrame(hold_back_list)
+                prices = pd.Series({tickers[0]: data['Close'].iloc[-1]})
+                
+            df['Current Price'] = df['Ticker'].map(prices)
+            df['Projected Value (INR)'] = df['Shares'] * df['Current Price']
             
-            display_df = held_df[['Symbol', 'Shares', 'P&L (%)', 'Current Price']]
-            st.dataframe(display_df, use_container_width=True)
+            # Fill missing text values to prevent search errors
+            df['Verdict'] = df['Verdict'].fillna("")
+            
+            exits_df = df[df['Verdict'].str.contains('Exit', case=False, na=False)]
+            total_exit_cash = exits_df['Projected Value (INR)'].sum()
+            
+            st.metric(label="Mandatory Exit Capital (Stop-Losses)", value=f"₹{total_exit_cash:,.2f}")
+            
+            current_capital = total_exit_cash
+            scale_outs_df = df[df['Verdict'].str.contains('Scale Out', case=False, na=False)].sort_values(by='P&L (%)', ascending=True)
+            
+            hold_back_list = []
+            
+            if current_capital >= target_capital:
+                st.success(f"Target of ₹{target_capital:,.2f} met entirely by Exits! You can hold back ALL Scale Out shares.")
+                hold_back_list.append(scale_outs_df)
+            else:
+                st.warning(f"Shortfall from Exits: ₹{target_capital - current_capital:,.2f}. Selling weakest Scale Outs to bridge the gap...")
+                for index, row in scale_outs_df.iterrows():
+                    if current_capital < target_capital:
+                        current_capital += row['Projected Value (INR)']
+                        st.write(f"Sold {row['Shares']} shares of **{row['Symbol']}** (+{row['P&L (%)']}%) -> Added ₹{row['Projected Value (INR)']:,.2f}")
+                    else:
+                        hold_back_list.append(row)
+            
+            st.metric(label="Total Capital Ready", value=f"₹{current_capital:,.2f}", delta=f"₹{current_capital - target_capital:,.2f} over target")
+            
+            if hold_back_list:
+                st.subheader("Shares to Hold Back (Let Run)")
+                if isinstance(hold_back_list[0], pd.DataFrame):
+                    held_df = hold_back_list[0]
+                else:
+                    held_df = pd.DataFrame(hold_back_list)
+                
+                display_df = held_df[['Symbol', 'Shares', 'P&L (%)', 'Current Price']]
+                st.dataframe(display_df, use_container_width=True)
+                
+        except Exception as e:
+            st.error(f"An error occurred while calculating: {e}")
 
 # =====================================================================
 # APP LAYOUT & UI STARTS HERE
 # =====================================================================
 
-# 1. Setup the Webpage & PDF Print CSS
 st.set_page_config(page_title="Strategic Wealth Report", page_icon="📊", layout="wide")
 st.markdown("""
     <style>
@@ -133,7 +149,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 2. Sidebar Settings & File Uploader (Always Visible)
 with st.sidebar:
     st.header("⚙️ Mechanical Parameters")
     fresh_capital = st.number_input("Total Fresh Capital (₹)", value=100000, step=10000)
@@ -141,21 +156,23 @@ with st.sidebar:
     st.divider()
     uploaded_file = st.file_uploader("Upload Zerodha Holdings", type=['csv', 'xlsx'])
 
-# 3. Create the Main Tabs at the Top of the App
-tab_main, tab_calculator = st.tabs(["📊 Main Portfolio", "🧮 Monday 2L Capital Calculator"])
+tab_main, tab_calculator = st.tabs(["📊 Main Portfolio", "🧮 Dynamic Capital Calculator"])
 
 # ---------------------------------------------------------------------
 # CALCULATOR TAB
 # ---------------------------------------------------------------------
 with tab_calculator:
-    st.subheader("Target ₹2,00,000 Generation")
-    st.write("Paste your 40 trades from the export below to calculate what to hold back.")
+    st.subheader("Dynamic Target Generation")
+    st.write("Adjust your target capital below and paste your trade export. The app will automatically count how many trades you pasted.")
+    
+    # NEW: Adjustable target input
+    user_target = st.number_input("Set Target Capital to Generate (₹)", min_value=10000, value=200000, step=10000)
     
     user_csv_input = st.text_area("Paste Trade Export Here:", height=200)
     
     if st.button("Calculate Target Capital"):
         if user_csv_input:
-            calculate_monday_capital(user_csv_input)
+            calculate_monday_capital(user_csv_input, target_capital=user_target)
         else:
             st.warning("Please paste the trade data into the box first.")
 
@@ -167,7 +184,6 @@ with tab_main:
     st.write("Mechanical Buying Engine | Fundamentals + MACD + Volume + Pivots")
     
     if uploaded_file is not None:
-        # --- READ AND AUTO-TRANSLATE ---
         with st.spinner("Processing file structure..."):
             filename = uploaded_file.name
             if filename.endswith('.csv'):
@@ -208,7 +224,6 @@ with tab_main:
                     fallback_col = col
                     break
         
-        # --- ANALYSIS ENGINE ---
         if st.button("🚀 Execute Master Scan", type="primary"):
             portfolio_results = []
             progress_bar = st.progress(0)
@@ -238,7 +253,6 @@ with tab_main:
                 status_text.text(f"Scanning Quality & Technicals: {symbol} ({index + 1}/{total_stocks})...")
                 
                 try:
-                    # 3. CALL THE CACHED, STEALTHY FETCHER
                     hist, info = fetch_market_data(yf_symbol)
                     
                     if len(hist) >= 50:
