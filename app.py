@@ -5,7 +5,61 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import time
-
+import re
+import io
+def calculate_monday_capital(csv_data, target_capital=200000):
+    st.subheader("Capital Generation Projection")
+    
+    with st.spinner('Fetching real-time NSE prices...'):
+        df = pd.read_csv(io.StringIO(csv_data), sep=',\s*', engine='python')
+        df['Shares'] = df['Action Details'].apply(lambda x: int(re.search(r'\d+', x).group()))
+        df['Ticker'] = df['Symbol'] + '.NS'
+        df['P&L (%)'] = pd.to_numeric(df['P&L (%)'])
+        
+        tickers = df['Ticker'].tolist()
+        data = yf.download(tickers, period="1d", progress=False)
+        
+        if isinstance(data.columns, pd.MultiIndex):
+            prices = data['Close'].iloc[-1]
+        else:
+            prices = pd.Series({tickers[0]: data['Close'].iloc[-1]})
+            
+        df['Current Price'] = df['Ticker'].map(prices)
+        df['Projected Value (INR)'] = df['Shares'] * df['Current Price']
+        
+        exits_df = df[df['Verdict'].str.contains('Exit')]
+        total_exit_cash = exits_df['Projected Value (INR)'].sum()
+        
+        st.metric(label="Mandatory Exit Capital (Stop-Losses)", value=f"₹{total_exit_cash:,.2f}")
+        
+        current_capital = total_exit_cash
+        scale_outs_df = df[df['Verdict'].str.contains('Scale Out')].sort_values(by='P&L (%)', ascending=True)
+        
+        hold_back_list = []
+        
+        if current_capital >= target_capital:
+            st.success("Target met entirely by Exits! You can hold back ALL Scale Out shares.")
+            hold_back_list.append(scale_outs_df)
+        else:
+            st.warning(f"Shortfall from Exits: ₹{target_capital - current_capital:,.2f}. Selling weakest Scale Outs to bridge the gap...")
+            for index, row in scale_outs_df.iterrows():
+                if current_capital < target_capital:
+                    current_capital += row['Projected Value (INR)']
+                    st.write(f"Sold {row['Shares']} shares of **{row['Symbol']}** (+{row['P&L (%)']}%) -> Added ₹{row['Projected Value (INR)']:,.2f}")
+                else:
+                    hold_back_list.append(row)
+        
+        st.metric(label="Total Capital Ready for Monday", value=f"₹{current_capital:,.2f}", delta=f"₹{current_capital - target_capital:,.2f} over target")
+        
+        if hold_back_list:
+            st.subheader("Shares to Hold Back (Let Run)")
+            if isinstance(hold_back_list[0], pd.DataFrame):
+                held_df = hold_back_list[0]
+            else:
+                held_df = pd.DataFrame(hold_back_list)
+            
+            display_df = held_df[['Symbol', 'Shares', 'P&L (%)', 'Current Price']]
+            st.dataframe(display_df, use_container_width=True)
 # --- CUSTOM MATH FUNCTIONS ---
 def calculate_rsi(prices, window=14):
     delta = prices.diff()
@@ -304,3 +358,24 @@ if uploaded_file is not None:
                 if not top_weights.empty:
                     fig_weight = px.treemap(top_weights, path=['Symbol'], values='Current Value (₹)', title='STOCK WEIGHTAGE')
                     st.plotly_chart(fig_weight, use_container_width=True)
+# --- PASTE THIS AT THE VERY BOTTOM OF YOUR FILE ---
+
+st.divider() 
+tab_main, tab_calculator = st.tabs(["Main Portfolio", "Monday 2L Capital Calculator"])
+
+with tab_main:
+    st.write("Your existing complete holdings tools remain here.")
+    # Note: If you already have main content being rendered at the bottom, 
+    # just wrap that existing code under this `with tab_main:` block.
+
+with tab_calculator:
+    st.subheader("Target ₹2,00,000 Generation")
+    st.write("Paste your 40 trades from the export below to calculate what to hold back.")
+    
+    user_csv_input = st.text_area("Paste Trade Export Here:", height=200)
+    
+    if st.button("Calculate Target Capital"):
+        if user_csv_input:
+            calculate_monday_capital(user_csv_input)
+        else:
+            st.warning("Please paste the trade data into the box first.")
