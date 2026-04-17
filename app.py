@@ -66,16 +66,16 @@ def calculate_monday_capital(csv_data, target_capital):
     
     with st.spinner('Fetching real-time NSE prices...'):
         try:
-            # 1. Clean the incoming data to prevent KeyErrors
+            # 1. Clean the incoming data
             df = pd.read_csv(io.StringIO(csv_data), sep=',')
-            df.columns = df.columns.str.strip() # Strips invisible spaces from headers
+            df.columns = df.columns.str.strip() 
             
-            # 2. Safety check for the column
+            # 2. Safety check
             if 'Action Details' not in df.columns:
                 st.error(f"Could not find the 'Action Details' column. Please check your pasted text. Columns found: {', '.join(df.columns)}")
                 return
 
-            # 3. Safely extract numbers
+            # 3. Safely extract numbers & prep dataframe
             def extract_shares(text):
                 match = re.search(r'\d+', str(text))
                 return int(match.group()) if match else 0
@@ -83,7 +83,9 @@ def calculate_monday_capital(csv_data, target_capital):
             df['Shares'] = df['Action Details'].apply(extract_shares)
             df['Ticker'] = df['Symbol'].str.strip() + '.NS'
             df['P&L (%)'] = pd.to_numeric(df['P&L (%)'], errors='coerce').fillna(0)
+            df['Verdict'] = df['Verdict'].fillna("")
             
+            # 4. Fetch Live Prices
             tickers = df['Ticker'].tolist()
             data = yf.download(tickers, period="1d", progress=False)
             
@@ -95,42 +97,65 @@ def calculate_monday_capital(csv_data, target_capital):
             df['Current Price'] = df['Ticker'].map(prices)
             df['Projected Value (INR)'] = df['Shares'] * df['Current Price']
             
-            # Fill missing text values to prevent search errors
-            df['Verdict'] = df['Verdict'].fillna("")
-            
+            # 5. Core Math Engine
             exits_df = df[df['Verdict'].str.contains('Exit', case=False, na=False)]
             total_exit_cash = exits_df['Projected Value (INR)'].sum()
             
-            st.metric(label="Mandatory Exit Capital (Stop-Losses)", value=f"₹{total_exit_cash:,.2f}")
-            
-            current_capital = total_exit_cash
             scale_outs_df = df[df['Verdict'].str.contains('Scale Out', case=False, na=False)].sort_values(by='P&L (%)', ascending=True)
             
-            hold_back_list = []
+            current_capital = total_exit_cash
+            sell_df = exits_df.copy() # Start our sell list with mandatory exits
+            hold_back_df = pd.DataFrame()
+            
+            # High-level metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(label="Mandatory Exit Capital", value=f"₹{total_exit_cash:,.2f}")
             
             if current_capital >= target_capital:
                 st.success(f"Target of ₹{target_capital:,.2f} met entirely by Exits! You can hold back ALL Scale Out shares.")
-                hold_back_list.append(scale_outs_df)
+                hold_back_df = scale_outs_df.copy()
             else:
                 st.warning(f"Shortfall from Exits: ₹{target_capital - current_capital:,.2f}. Selling weakest Scale Outs to bridge the gap...")
+                sold_scale_outs = []
+                hold_scale_outs = []
+                
                 for index, row in scale_outs_df.iterrows():
                     if current_capital < target_capital:
                         current_capital += row['Projected Value (INR)']
-                        st.write(f"Sold {row['Shares']} shares of **{row['Symbol']}** (+{row['P&L (%)']}%) -> Added ₹{row['Projected Value (INR)']:,.2f}")
+                        sold_scale_outs.append(row)
                     else:
-                        hold_back_list.append(row)
-            
-            st.metric(label="Total Capital Ready", value=f"₹{current_capital:,.2f}", delta=f"₹{current_capital - target_capital:,.2f} over target")
-            
-            if hold_back_list:
-                st.subheader("Shares to Hold Back (Let Run)")
-                if isinstance(hold_back_list[0], pd.DataFrame):
-                    held_df = hold_back_list[0]
-                else:
-                    held_df = pd.DataFrame(hold_back_list)
+                        hold_scale_outs.append(row)
                 
-                display_df = held_df[['Symbol', 'Shares', 'P&L (%)', 'Current Price']]
-                st.dataframe(display_df, use_container_width=True)
+                # Add the scale-outs we had to sell to our master sell list
+                if sold_scale_outs:
+                    sell_df = pd.concat([sell_df, pd.DataFrame(sold_scale_outs)], ignore_index=True)
+                
+                # Add the remaining scale-outs to our hold back list
+                if hold_scale_outs:
+                    hold_back_df = pd.DataFrame(hold_scale_outs)
+            
+            with col2:
+                st.metric(label="Total Capital Ready", value=f"₹{current_capital:,.2f}", delta=f"₹{current_capital - target_capital:,.2f} over target")
+            
+            st.divider()
+            
+            # 6. Display the Highlighted Action Tables
+            st.subheader("🔴 Shares to Sell (Action Required)")
+            st.caption("Execute these trades first. This list includes all your Stop-Loss exits and any Scale Outs needed to reach your target.")
+            if not sell_df.empty:
+                display_sell_df = sell_df[['Symbol', 'Verdict', 'Shares', 'P&L (%)', 'Current Price', 'Projected Value (INR)']]
+                st.dataframe(display_sell_df, use_container_width=True)
+            else:
+                st.info("No shares require selling.")
+
+            st.subheader("🟢 Shares to Hold Back (Let Run)")
+            st.caption("Do NOT sell these shares. Let your momentum winners continue to run.")
+            if not hold_back_df.empty:
+                display_hold_df = hold_back_df[['Symbol', 'Verdict', 'Shares', 'P&L (%)', 'Current Price', 'Projected Value (INR)']]
+                st.dataframe(display_hold_df, use_container_width=True)
+            else:
+                st.info("No shares to hold back. All scale-outs were sold to hit the capital target.")
                 
         except Exception as e:
             st.error(f"An error occurred while calculating: {e}")
@@ -163,14 +188,12 @@ tab_main, tab_calculator = st.tabs(["📊 Main Portfolio", "🧮 Dynamic Capital
 # ---------------------------------------------------------------------
 with tab_calculator:
     st.subheader("Dynamic Target Generation")
-    st.write("Adjust your target capital below and paste your trade export. The app will automatically count how many trades you pasted.")
+    st.write("Adjust your target capital below and paste your trade export. The app will automatically construct your sell list.")
     
-    # NEW: Adjustable target input
     user_target = st.number_input("Set Target Capital to Generate (₹)", min_value=10000, value=200000, step=10000)
-    
     user_csv_input = st.text_area("Paste Trade Export Here:", height=200)
     
-    if st.button("Calculate Target Capital"):
+    if st.button("Calculate Execution Plan"):
         if user_csv_input:
             calculate_monday_capital(user_csv_input, target_capital=user_target)
         else:
