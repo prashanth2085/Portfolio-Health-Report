@@ -12,7 +12,10 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload)
+        response = requests.post(url, json=payload)
+        # This will flag any hidden Telegram formatting rejections!
+        if response.status_code != 200:
+            print(f"Telegram API Error: {response.text}") 
     except Exception as e:
         print(f"Telegram Error: {e}")
 
@@ -151,7 +154,6 @@ def run_scanner():
     # 3. SMART SORTING & TELEGRAM ALERTS
     # ==========================================
     if actions_to_take:
-        # Sort actions by their emoji category
         critical_exits = [a for a in actions_to_take if "🔴" in a]
         profit_targets = [a for a in actions_to_take if "🟡" in a]
         buy_setups = [a for a in actions_to_take if "🟢" in a or "⚠️" in a]
@@ -181,21 +183,32 @@ def run_scanner():
 
         send_telegram_message(main_message)
 
-        # --- SEND MESSAGE 2: OVERFLOW DETAILS (If needed) ---
+        # --- SEND MESSAGE 2: OVERFLOW DETAILS (SAFELY CHUNKED) ---
+        chunk_size = 20 # Safe limit to avoid Telegram restrictions
+
         if len(critical_exits) > 5:
-            time.sleep(1) # Wait a second for order
-            overflow_exits = "📂 *Full List of Pending Exits (Continued):*\n\n" + "\n\n".join(critical_exits[5:])
-            send_telegram_message(overflow_exits[:4000]) # :4000 protects against Telegram char limits
+            time.sleep(1.5) 
+            for i in range(5, len(critical_exits), chunk_size):
+                chunk = critical_exits[i : i + chunk_size]
+                msg = "📂 *Full List of Pending Exits (Continued):*\n\n" + "\n\n".join(chunk)
+                send_telegram_message(msg)
+                time.sleep(1.5)
             
         if len(profit_targets) > 5:
-            time.sleep(1)
-            overflow_profits = "📂 *Full List of Profit Targets (Continued):*\n\n" + "\n\n".join(profit_targets[5:])
-            send_telegram_message(overflow_profits[:4000])
+            time.sleep(1.5)
+            for i in range(5, len(profit_targets), chunk_size):
+                chunk = profit_targets[i : i + chunk_size]
+                msg = "📂 *Full List of Profit Targets (Continued):*\n\n" + "\n\n".join(chunk)
+                send_telegram_message(msg)
+                time.sleep(1.5)
             
         if len(buy_setups) > 5:
-            time.sleep(1)
-            overflow_buys = "📂 *Full List of Buy Setups (Continued):*\n\n" + "\n\n".join(buy_setups[5:])
-            send_telegram_message(overflow_buys[:4000])
+            time.sleep(1.5)
+            for i in range(5, len(buy_setups), chunk_size):
+                chunk = buy_setups[i : i + chunk_size]
+                msg = "📂 *Full List of Buy Setups (Continued):*\n\n" + "\n\n".join(chunk)
+                send_telegram_message(msg)
+                time.sleep(1.5)
 
     else:
         send_telegram_message("📊 *Strategic Wealth Report*\nScan complete. No mechanical actions triggered today. Hold steady.")
