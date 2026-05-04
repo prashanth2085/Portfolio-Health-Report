@@ -41,7 +41,7 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
 
 # --- MAIN ENGINE ---
 def run_scanner():
-    # 1. Read the local holdings file saved in your GitHub repo
+    # 1. Read the local holdings file
     try:
         file_path = None
         if os.path.exists('holdings.xlsx'):
@@ -51,9 +51,7 @@ def run_scanner():
             file_path = 'holdings.csv'
             df_raw = pd.read_csv(file_path, header=None)
         else:
-            error_msg = "⚠️ *Bot Alert*: I woke up, but I cannot find `holdings.xlsx` or `holdings.csv` in your GitHub repository. Please check the file name!"
-            print(error_msg)
-            send_telegram_message(error_msg)
+            send_telegram_message("⚠️ *Bot Alert*: I cannot find `holdings.xlsx` or `holdings.csv` in GitHub!")
             return
 
         header_row_idx = 0
@@ -69,7 +67,6 @@ def run_scanner():
             df_clean = pd.read_csv(file_path, skiprows=header_row_idx)
             
         df_clean.columns = df_clean.columns.astype(str).str.strip()
-        
         rename_map = {'Instrument': 'Symbol', 'Avg. cost': 'Average Price', 'Avg Price': 'Average Price', 'Qty.': 'Quantity Available', 'Qty': 'Quantity Available', 'Quantity': 'Quantity Available'}
         df_clean = df_clean.rename(columns=rename_map)
         df_clean = df_clean.dropna(subset=['Symbol', 'Average Price']).copy()
@@ -77,24 +74,36 @@ def run_scanner():
         df_clean['Average Price'] = pd.to_numeric(df_clean['Average Price'], errors='coerce')
         df_clean = df_clean[df_clean['Quantity Available'] > 0]
     except Exception as e:
-        error_msg = f"⚠️ *Bot Alert*: I found the file, but had an error reading it: {e}"
-        send_telegram_message(error_msg)
+        send_telegram_message(f"⚠️ *Bot Alert*: Error reading file: {e}")
         return
 
-    # System Parameters
+     # --- RING-FENCED STOCKS (SMALLCASE & ETFs) ---
+    smallcase_ignore_list = [
+        'AIIL', 'AJANTPHARM', 'ANGELONE', 'APLAPOLLO', 'BPCL', 'CASTROLIND', 
+        'COALINDIA', 'COLPAL', 'ERIS', 'GMDCLTD', 'GOLDCASE', 'IPCALAB', 
+        'JUNIORBEES', 'KPITTECH', 'KSB', 'MARICO', 'MINDSPACE-RR', 'MOTHERSON', 
+        'NATCOPHARM', 'NESTLEIND', 'NIFTYBEES', 'NXST', 'OIL', 'RAINBOW', 
+        'SILVERCASE', 'TCS', 'TORNTPHARM', 'VGUARD', 'VIJAYA'
+    ]
+
     fresh_capital = 100000 
     min_roe = 0.15 
     
-    actions_to_take = []
+    actions = {'exits': [], 'profits': [], 'buys': []}
     
     # 2. Scan Portfolio
     for index, row in df_clean.iterrows():
         symbol = str(row['Symbol']).strip()
+        
+        # 🛡️ THE RING-FENCE CHECK: If it's in your Smallcase list, skip it instantly!
+        if symbol in smallcase_ignore_list:
+            continue
+
         avg_price = float(row['Average Price'])
         quantity = int(row['Quantity Available'])
         yf_symbol = f"{symbol}.NS"
         
-        time.sleep(0.25) # Stealth delay
+        time.sleep(0.25)
         try:
             ticker = yf.Ticker(yf_symbol)
             hist = ticker.history(period="1y")
@@ -114,7 +123,6 @@ def run_scanner():
             macd, macd_signal = calculate_macd(hist['Close'])
             macd_bullish = float(macd.iloc[-1]) > float(macd_signal.iloc[-1])
             
-            # Fetch Quality
             is_high_quality = True
             for attempt in range(3):
                 try:
@@ -127,28 +135,60 @@ def run_scanner():
                         break
                 except: time.sleep(0.5)
 
-            # Mechanical Logic
-            if current_price <= auto_stop_price:
-                actions_to_take.append(f"🔴 *EXIT (Stop-Loss)*: {symbol}\nSell all {quantity} shares at ₹{current_price:.2f}.")
-            elif change_pct <= -15 and long_term_bullish:
-                if is_high_quality and macd_bullish:
-                    alloc_pct = 0.30 if change_pct <= -35 else 0.25 if change_pct <= -25 else 0.10
-                    shares_to_buy = int((fresh_capital * alloc_pct) / current_price) if current_price > 0 else 0
-                    actions_to_take.append(f"🟢 *SCALE IN ({int(alloc_pct*100)}% Tranche)*: {symbol}\nBuy {shares_to_buy} shares at ₹{current_price:.2f}.")
+            if current_price <= auto_stop_price or (not long_term_bullish and change_pct < -20):
+                msg = f"🔴 *{symbol}*: Sell {quantity} shares @ ₹{current_price:.2f} *(P&L: {change_pct:.1f}%)*"
+                actions['exits'].append({'msg': msg, 'score': change_pct})
+                
             elif change_pct >= 25 and current_rsi > 70:
                 sell_pct = 1.0 if change_pct >= 100 else 0.40 if change_pct >= 60 else 0.30 if change_pct >= 45 else 0.20 if change_pct >= 35 else 0.10
                 shares_to_sell = max(1, int(quantity * sell_pct))
-                actions_to_take.append(f"🟡 *TAKE PROFIT*: {symbol}\nSell {shares_to_sell} shares at ₹{current_price:.2f}.")
-            elif not long_term_bullish and change_pct < -20:
-                actions_to_take.append(f"🔴 *HIGH-RISK EXIT*: {symbol}\nBroken 200-EMA. Consider exiting.")
+                msg = f"🟡 *{symbol}*: Sell {shares_to_sell} shares @ ₹{current_price:.2f} *(Gain: +{change_pct:.1f}%)*"
+                actions['profits'].append({'msg': msg, 'score': change_pct})
+                
+            elif change_pct <= -15 and long_term_bullish and is_high_quality and macd_bullish:
+                alloc_pct = 0.30 if change_pct <= -35 else 0.25 if change_pct <= -25 else 0.10
+                shares_to_buy = int((fresh_capital * alloc_pct) / current_price) if current_price > 0 else 0
+                msg = f"🟢 *{symbol}*: Buy {shares_to_buy} shares @ ₹{current_price:.2f} *(Dip: {change_pct:.1f}%)*"
+                actions['buys'].append({'msg': msg, 'score': change_pct})
                 
         except Exception:
             pass
 
-    # 3. Send Telegram Alert if there are actions
-    if actions_to_take:
-        message = "📊 *Strategic Wealth Report: Market Alert*\n\n" + "\n\n".join(actions_to_take)
-        send_telegram_message(message)
+    # 3. Format the Prioritized Telegram Message
+    final_message = "📊 *Execution Plan (Trade Triage)*\n\n"
+    has_actions = False
+
+    actions['exits'] = sorted(actions['exits'], key=lambda x: x['score'])
+    if actions['exits']:
+        has_actions = True
+        final_message += "🚨 *PRIORITY 1: CRITICAL EXITS (Stop-Loss/Weak)*\n"
+        for i, item in enumerate(actions['exits'][:5]):
+            final_message += f"{i+1}. {item['msg']}\n"
+        if len(actions['exits']) > 5:
+            final_message += f"_+ {len(actions['exits']) - 5} more exits pending._\n"
+        final_message += "\n"
+
+    actions['profits'] = sorted(actions['profits'], key=lambda x: x['score'], reverse=True)
+    if actions['profits']:
+        has_actions = True
+        final_message += "💰 *PRIORITY 2: PRIME PROFIT TAKING (Overextended)*\n"
+        for i, item in enumerate(actions['profits'][:5]):
+            final_message += f"{i+1}. {item['msg']}\n"
+        if len(actions['profits']) > 5:
+            final_message += f"_+ {len(actions['profits']) - 5} more profit targets._\n"
+        final_message += "\n"
+
+    actions['buys'] = sorted(actions['buys'], key=lambda x: x['score'])
+    if actions['buys']:
+        has_actions = True
+        final_message += "🌱 *PRIORITY 3: BEST SCALE-IN VALUE (Deepest Dips)*\n"
+        for i, item in enumerate(actions['buys'][:5]):
+            final_message += f"{i+1}. {item['msg']}\n"
+        if len(actions['buys']) > 5:
+            final_message += f"_+ {len(actions['buys']) - 5} more buy targets._\n"
+
+    if has_actions:
+        send_telegram_message(final_message)
     else:
         send_telegram_message("📊 *Strategic Wealth Report*\nScan complete. No mechanical actions triggered today. Hold steady.")
 
