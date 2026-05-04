@@ -32,9 +32,16 @@ def calculate_atr(hist, window=14):
     true_range = ranges.max(axis=1)
     return true_range.rolling(window).mean()
 
+def calculate_macd(prices, fast=12, slow=26, signal=9):
+    ema_fast = prices.ewm(span=fast, adjust=False).mean()
+    ema_slow = prices.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    macd_signal = macd.ewm(span=signal, adjust=False).mean()
+    return macd, macd_signal
+
 # --- MAIN ENGINE ---
 def run_scanner():
-    # 1. Read the local holdings file 
+    # 1. Read the local holdings file saved in your GitHub repo
     try:
         file_path = None
         if os.path.exists('holdings.xlsx'):
@@ -44,8 +51,11 @@ def run_scanner():
             file_path = 'holdings.csv'
             df_raw = pd.read_csv(file_path, header=None)
         else:
-            return # Silent exit if file is missing
-            
+            error_msg = "⚠️ *Bot Alert*: I woke up, but I cannot find `holdings.xlsx` or `holdings.csv` in your GitHub repository. Please check the file name!"
+            print(error_msg)
+            send_telegram_message(error_msg)
+            return
+
         header_row_idx = 0
         for idx, row in df_raw.iterrows():
             row_str = " ".join([str(cell).lower() for cell in row.values if pd.notna(cell)])
@@ -59,6 +69,7 @@ def run_scanner():
             df_clean = pd.read_csv(file_path, skiprows=header_row_idx)
             
         df_clean.columns = df_clean.columns.astype(str).str.strip()
+        
         rename_map = {'Instrument': 'Symbol', 'Avg. cost': 'Average Price', 'Avg Price': 'Average Price', 'Qty.': 'Quantity Available', 'Qty': 'Quantity Available', 'Quantity': 'Quantity Available'}
         df_clean = df_clean.rename(columns=rename_map)
         df_clean = df_clean.dropna(subset=['Symbol', 'Average Price']).copy()
@@ -66,10 +77,15 @@ def run_scanner():
         df_clean['Average Price'] = pd.to_numeric(df_clean['Average Price'], errors='coerce')
         df_clean = df_clean[df_clean['Quantity Available'] > 0]
     except Exception as e:
+        error_msg = f"⚠️ *Bot Alert*: I found the file, but had an error reading it: {e}"
+        send_telegram_message(error_msg)
         return
 
-    critical_exits = []
-    profit_targets = []
+    # System Parameters
+    fresh_capital = 100000 
+    min_roe = 0.15 
+    
+    actions_to_take = []
     
     # 2. Scan Portfolio
     for index, row in df_clean.iterrows():
@@ -95,61 +111,94 @@ def run_scanner():
             hist['ATR'] = calculate_atr(hist)
             auto_stop_price = avg_price - (3 * float(hist['ATR'].iloc[-1]))
             
-            # THE ORIGINAL LOGIC RESTORED
-            if current_price <= auto_stop_price or (not long_term_bullish and change_pct < -20):
-                critical_exits.append({'symbol': symbol, 'qty': quantity, 'price': current_price, 'pl': change_pct})
+            macd, macd_signal = calculate_macd(hist['Close'])
+            macd_bullish = float(macd.iloc[-1]) > float(macd_signal.iloc[-1])
+            
+            # Fetch Quality
+            is_high_quality = True
+            for attempt in range(3):
+                try:
+                    info = ticker.info
+                    if info:
+                        roe = info.get('returnOnEquity', 0) or 0
+                        fcf = info.get('freeCashflow', 0) or 0
+                        if info.get('returnOnEquity') is not None:
+                            is_high_quality = (roe >= min_roe) and (fcf > 0)
+                        break
+                except: time.sleep(0.5)
+
+            # Mechanical Logic
+            if current_price <= auto_stop_price:
+                actions_to_take.append(f"🔴 *EXIT (Stop-Loss)*: {symbol}\nSell all {quantity} shares at ₹{current_price:.2f}.")
+            elif change_pct <= -15 and long_term_bullish:
+                if is_high_quality and macd_bullish:
+                    alloc_pct = 0.30 if change_pct <= -35 else 0.25 if change_pct <= -25 else 0.10
+                    shares_to_buy = int((fresh_capital * alloc_pct) / current_price) if current_price > 0 else 0
+                    actions_to_take.append(f"🟢 *SCALE IN ({int(alloc_pct*100)}% Tranche)*: {symbol}\nBuy {shares_to_buy} shares at ₹{current_price:.2f}.")
+                else:
+                    actions_to_take.append(f"⚠️ *VALUE TRAP*: {symbol}\nFailed quality filter. Do not buy the dip.")
             elif change_pct >= 25 and current_rsi > 70:
                 sell_pct = 1.0 if change_pct >= 100 else 0.40 if change_pct >= 60 else 0.30 if change_pct >= 45 else 0.20 if change_pct >= 35 else 0.10
                 shares_to_sell = max(1, int(quantity * sell_pct))
-                profit_targets.append({'symbol': symbol, 'qty': shares_to_sell, 'price': current_price, 'pl': change_pct})
+                actions_to_take.append(f"🟡 *TAKE PROFIT*: {symbol}\nSell {shares_to_sell} shares at ₹{current_price:.2f}.")
+            elif not long_term_bullish and change_pct < -20:
+                actions_to_take.append(f"🔴 *HIGH-RISK EXIT*: {symbol}\nBroken 200-EMA. Consider exiting.")
                 
         except Exception:
             pass
 
-    # Sort the lists: Worst losses first, Biggest gains first
-    critical_exits = sorted(critical_exits, key=lambda x: x['pl'])
-    profit_targets = sorted(profit_targets, key=lambda x: x['pl'], reverse=True)
-
-    # Recreate the exact text formatting you liked
-    formatted_exits = [f"{i+1}. 🔴 {item['symbol']}: Sell {item['qty']} shares @ ₹{item['price']:.2f} (P&L: {item['pl']:.1f}%)" for i, item in enumerate(critical_exits)]
-    formatted_profits = [f"{i+1}. 🟡 {item['symbol']}: Sell {item['qty']} shares @ ₹{item['price']:.2f} (Gain: +{item['pl']:.1f}%)" for i, item in enumerate(profit_targets)]
-
-    if not formatted_exits and not formatted_profits:
-        send_telegram_message("📊 *Strategic Wealth Report*\nScan complete. No mechanical actions triggered today. Hold steady.")
-        return
-
     # ==========================================
-    # 3. SEND MESSAGE 1: MAIN DASHBOARD
+    # 3. SMART SORTING & TELEGRAM ALERTS
     # ==========================================
-    main_message = "📊 *Execution Plan (Trade Triage)*\n\n"
-    
-    if formatted_exits:
-        main_message += "🚨 *PRIORITY 1: CRITICAL EXITS (Stop-Loss/Weak)*\n"
-        main_message += "\n".join(formatted_exits[:5])
-        if len(formatted_exits) > 5:
-            main_message += f"\n_+ {len(formatted_exits) - 5} more exits pending._\n"
-        main_message += "\n\n"
+    if actions_to_take:
+        # Sort actions by their emoji category
+        critical_exits = [a for a in actions_to_take if "🔴" in a]
+        profit_targets = [a for a in actions_to_take if "🟡" in a]
+        buy_setups = [a for a in actions_to_take if "🟢" in a or "⚠️" in a]
+
+        # --- SEND MESSAGE 1: THE MAIN TRIAGE DASHBOARD ---
+        main_message = "📊 *Execution Plan (Trade Triage)*\n\n"
         
-    if formatted_profits:
-        main_message += "💰 *PRIORITY 2: PRIME PROFIT TAKING (Overextended)*\n"
-        main_message += "\n".join(formatted_profits[:5])
-        if len(formatted_profits) > 5:
-            main_message += f"\n_+ {len(formatted_profits) - 5} more profit targets._\n"
+        if critical_exits:
+            main_message += "🚨 *PRIORITY 1: CRITICAL EXITS*\n"
+            main_message += "\n\n".join(critical_exits[:5])
+            if len(critical_exits) > 5:
+                main_message += f"\n_...and {len(critical_exits) - 5} more exits pending._\n"
+            main_message += "\n\n"
+            
+        if profit_targets:
+            main_message += "💰 *PRIORITY 2: PRIME PROFIT TAKING*\n"
+            main_message += "\n\n".join(profit_targets[:5])
+            if len(profit_targets) > 5:
+                main_message += f"\n_...and {len(profit_targets) - 5} more profit targets._\n"
+            main_message += "\n\n"
+            
+        if buy_setups:
+            main_message += "🛒 *PRIORITY 3: BUY SETUPS & TRAPS*\n"
+            main_message += "\n\n".join(buy_setups[:5])
+            if len(buy_setups) > 5:
+                main_message += f"\n_...and {len(buy_setups) - 5} more buy setups._\n"
 
-    send_telegram_message(main_message.strip())
+        send_telegram_message(main_message)
 
-    # ==========================================
-    # 4. SEND MESSAGE 2 & 3: THE OVERFLOW TEXTS
-    # ==========================================
-    if len(formatted_exits) > 5:
-        time.sleep(1) # Wait 1 second so messages arrive in order
-        overflow_exits_msg = "📂 *Full List of Pending Exits (Continued):*\n" + "\n".join(formatted_exits[5:])
-        send_telegram_message(overflow_exits_msg[:4000])
+        # --- SEND MESSAGE 2: OVERFLOW DETAILS (If needed) ---
+        if len(critical_exits) > 5:
+            time.sleep(1) # Wait a second for order
+            overflow_exits = "📂 *Full List of Pending Exits (Continued):*\n\n" + "\n\n".join(critical_exits[5:])
+            send_telegram_message(overflow_exits[:4000]) # :4000 protects against Telegram char limits
+            
+        if len(profit_targets) > 5:
+            time.sleep(1)
+            overflow_profits = "📂 *Full List of Profit Targets (Continued):*\n\n" + "\n\n".join(profit_targets[5:])
+            send_telegram_message(overflow_profits[:4000])
+            
+        if len(buy_setups) > 5:
+            time.sleep(1)
+            overflow_buys = "📂 *Full List of Buy Setups (Continued):*\n\n" + "\n\n".join(buy_setups[5:])
+            send_telegram_message(overflow_buys[:4000])
 
-    if len(formatted_profits) > 5:
-        time.sleep(1)
-        overflow_profits_msg = "📂 *Full List of Profit Targets (Continued):*\n" + "\n".join(formatted_profits[5:])
-        send_telegram_message(overflow_profits_msg[:4000])
+    else:
+        send_telegram_message("📊 *Strategic Wealth Report*\nScan complete. No mechanical actions triggered today. Hold steady.")
 
 if __name__ == "__main__":
     run_scanner()
