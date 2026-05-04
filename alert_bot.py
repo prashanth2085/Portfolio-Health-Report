@@ -43,15 +43,31 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
 def run_scanner():
     # 1. Read the local holdings file saved in your GitHub repo
     try:
-        # Looking for the CSV file you uploaded
-        df_raw = pd.read_csv('holdings.csv', header=None)
+        file_path = None
+        if os.path.exists('holdings.xlsx'):
+            file_path = 'holdings.xlsx'
+            df_raw = pd.read_excel(file_path, header=None)
+        elif os.path.exists('holdings.csv'):
+            file_path = 'holdings.csv'
+            df_raw = pd.read_csv(file_path, header=None)
+        else:
+            error_msg = "⚠️ *Bot Alert*: I woke up, but I cannot find `holdings.xlsx` or `holdings.csv` in your GitHub repository. Please check the file name!"
+            print(error_msg)
+            send_telegram_message(error_msg)
+            return
+
         header_row_idx = 0
         for idx, row in df_raw.iterrows():
             row_str = " ".join([str(cell).lower() for cell in row.values if pd.notna(cell)])
             if 'symbol' in row_str or 'instrument' in row_str:
                 header_row_idx = idx
                 break
-        df_clean = pd.read_csv('holdings.csv', skiprows=header_row_idx)
+                
+        if file_path.endswith('.xlsx'):
+            df_clean = pd.read_excel(file_path, skiprows=header_row_idx)
+        else:
+            df_clean = pd.read_csv(file_path, skiprows=header_row_idx)
+            
         df_clean.columns = df_clean.columns.astype(str).str.strip()
         
         rename_map = {'Instrument': 'Symbol', 'Avg. cost': 'Average Price', 'Avg Price': 'Average Price', 'Qty.': 'Quantity Available', 'Qty': 'Quantity Available', 'Quantity': 'Quantity Available'}
@@ -61,9 +77,7 @@ def run_scanner():
         df_clean['Average Price'] = pd.to_numeric(df_clean['Average Price'], errors='coerce')
         df_clean = df_clean[df_clean['Quantity Available'] > 0]
     except Exception as e:
-        # THIS SENDS THE ERROR DIRECTLY TO TELEGRAM
-        error_msg = "⚠️ *Bot Alert*: I woke up, but I cannot find a file named exactly `holdings.csv` in your GitHub repository. Please check the file name!"
-        print(error_msg)
+        error_msg = f"⚠️ *Bot Alert*: I found the file, but had an error reading it: {e}"
         send_telegram_message(error_msg)
         return
 
@@ -100,13 +114,6 @@ def run_scanner():
             macd, macd_signal = calculate_macd(hist['Close'])
             macd_bullish = float(macd.iloc[-1]) > float(macd_signal.iloc[-1])
             
-            hist['Avg_Vol_20'] = hist['Volume'].rolling(window=20).mean()
-            current_vol = float(hist['Volume'].iloc[-1])
-            avg_vol = float(hist['Avg_Vol_20'].iloc[-1])
-            high_volume_dump = False
-            if pd.notna(avg_vol) and avg_vol > 0:
-                high_volume_dump = (current_price < float(hist['Open'].iloc[-1])) and (current_vol > (avg_vol * 1.5))
-
             # Fetch Quality
             is_high_quality = True
             for attempt in range(3):
@@ -124,14 +131,10 @@ def run_scanner():
             if current_price <= auto_stop_price:
                 actions_to_take.append(f"🔴 *EXIT (Stop-Loss)*: {symbol}\nSell all {quantity} shares at ₹{current_price:.2f}.")
             elif change_pct <= -15 and long_term_bullish:
-                if high_volume_dump or (not macd_bullish and current_rsi > 40):
-                    pass # Pause buy
-                elif is_high_quality:
+                if is_high_quality and macd_bullish:
                     alloc_pct = 0.30 if change_pct <= -35 else 0.25 if change_pct <= -25 else 0.10
                     shares_to_buy = int((fresh_capital * alloc_pct) / current_price) if current_price > 0 else 0
                     actions_to_take.append(f"🟢 *SCALE IN ({int(alloc_pct*100)}% Tranche)*: {symbol}\nBuy {shares_to_buy} shares at ₹{current_price:.2f}.")
-                else:
-                    actions_to_take.append(f"⚠️ *VALUE TRAP*: {symbol}\nFailed quality filter. Do not buy the dip.")
             elif change_pct >= 25 and current_rsi > 70:
                 sell_pct = 1.0 if change_pct >= 100 else 0.40 if change_pct >= 60 else 0.30 if change_pct >= 45 else 0.20 if change_pct >= 35 else 0.10
                 shares_to_sell = max(1, int(quantity * sell_pct))
