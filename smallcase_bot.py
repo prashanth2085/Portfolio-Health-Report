@@ -65,22 +65,24 @@ def run_watchlist_scanner():
         except Exception:
             pass
 
-    # Build the final Telegram message
-    final_message = "🎯 *Smallcase Watchlist Report*\n\n"
-    
+        # 1. Send the URGENT Actions Message First
     if actions_to_take:
-        final_message += "🚨 *ACTION REQUIRED:*\n" + "\n".join(actions_to_take) + "\n\n"
+        urgent_message = "🚨 *ACTION REQUIRED:*\n" + "\n".join(actions_to_take)
+        send_telegram_message(urgent_message)
     else:
-        final_message += "✅ *No urgent actions required today.*\n\n"
-        
-    if holding_steady:
-        final_message += "🛡 *HOLDING STEADY:*\n" + "\n".join(holding_steady)
+        send_telegram_message("✅ *Smallcase Watchlist: No urgent actions required today.*")
 
-    # Telegram has a 4096 character limit. 30 stocks is perfectly safe, but just in case:
-    if len(final_message) > 4000:
-        send_telegram_message(final_message[:4000])
-    else:
-        send_telegram_message(final_message)
+    # 2. Send the "Holding Steady" list as a completely separate, quiet message
+    if holding_steady:
+        time.sleep(1) # Ensures this text arrives second
+        steady_message = "🛡 *HOLDING STEADY (No Action Needed):*\n" + "\n".join(holding_steady)
+        
+        # Check if the holding list is too long for one Telegram message (4096 char limit)
+        if len(steady_message) > 4000:
+            send_telegram_message(steady_message[:4000])
+        else:
+            send_telegram_message(steady_message)
+
 
 if __name__ == "__main__":
     run_watchlist_scanner()
