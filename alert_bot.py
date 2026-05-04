@@ -4,22 +4,20 @@ import requests
 import os
 import time
 
-# --- SETUP TELEGRAM ---
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    # Switched to HTML parsing which is 100x safer for Telegram
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         response = requests.post(url, json=payload)
-        # This will flag any hidden Telegram formatting rejections!
         if response.status_code != 200:
-            print(f"Telegram API Error: {response.text}") 
+            print(f"Telegram API Error: {response.text}")
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-# --- CUSTOM MATH FUNCTIONS ---
 def calculate_rsi(prices, window=14):
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/window, adjust=False).mean()
@@ -42,9 +40,7 @@ def calculate_macd(prices, fast=12, slow=26, signal=9):
     macd_signal = macd.ewm(span=signal, adjust=False).mean()
     return macd, macd_signal
 
-# --- MAIN ENGINE ---
 def run_scanner():
-    # 1. Read the local holdings file saved in your GitHub repo
     try:
         file_path = None
         if os.path.exists('holdings.xlsx'):
@@ -54,9 +50,7 @@ def run_scanner():
             file_path = 'holdings.csv'
             df_raw = pd.read_csv(file_path, header=None)
         else:
-            error_msg = "⚠️ *Bot Alert*: I woke up, but I cannot find `holdings.xlsx` or `holdings.csv` in your GitHub repository. Please check the file name!"
-            print(error_msg)
-            send_telegram_message(error_msg)
+            send_telegram_message("⚠️ <b>Bot Alert</b>: I cannot find holdings.xlsx or holdings.csv in GitHub!")
             return
 
         header_row_idx = 0
@@ -72,7 +66,6 @@ def run_scanner():
             df_clean = pd.read_csv(file_path, skiprows=header_row_idx)
             
         df_clean.columns = df_clean.columns.astype(str).str.strip()
-        
         rename_map = {'Instrument': 'Symbol', 'Avg. cost': 'Average Price', 'Avg Price': 'Average Price', 'Qty.': 'Quantity Available', 'Qty': 'Quantity Available', 'Quantity': 'Quantity Available'}
         df_clean = df_clean.rename(columns=rename_map)
         df_clean = df_clean.dropna(subset=['Symbol', 'Average Price']).copy()
@@ -80,24 +73,20 @@ def run_scanner():
         df_clean['Average Price'] = pd.to_numeric(df_clean['Average Price'], errors='coerce')
         df_clean = df_clean[df_clean['Quantity Available'] > 0]
     except Exception as e:
-        error_msg = f"⚠️ *Bot Alert*: I found the file, but had an error reading it: {e}"
-        send_telegram_message(error_msg)
+        send_telegram_message(f"⚠️ <b>Bot Alert</b>: Error reading file: {e}")
         return
 
-    # System Parameters
     fresh_capital = 100000 
     min_roe = 0.15 
-    
     actions_to_take = []
     
-    # 2. Scan Portfolio
     for index, row in df_clean.iterrows():
         symbol = str(row['Symbol']).strip()
         avg_price = float(row['Average Price'])
         quantity = int(row['Quantity Available'])
         yf_symbol = f"{symbol}.NS"
         
-        time.sleep(0.25) # Stealth delay
+        time.sleep(0.25)
         try:
             ticker = yf.Ticker(yf_symbol)
             hist = ticker.history(period="1y")
@@ -117,7 +106,6 @@ def run_scanner():
             macd, macd_signal = calculate_macd(hist['Close'])
             macd_bullish = float(macd.iloc[-1]) > float(macd_signal.iloc[-1])
             
-            # Fetch Quality
             is_high_quality = True
             for attempt in range(3):
                 try:
@@ -130,88 +118,76 @@ def run_scanner():
                         break
                 except: time.sleep(0.5)
 
-            # Mechanical Logic
             if current_price <= auto_stop_price:
-                actions_to_take.append(f"🔴 *EXIT (Stop-Loss)*: {symbol}\nSell all {quantity} shares at ₹{current_price:.2f}.")
+                actions_to_take.append(f"🔴 <b>EXIT (Stop-Loss)</b>: {symbol}\nSell all {quantity} shares at ₹{current_price:.2f}.")
             elif change_pct <= -15 and long_term_bullish:
                 if is_high_quality and macd_bullish:
                     alloc_pct = 0.30 if change_pct <= -35 else 0.25 if change_pct <= -25 else 0.10
                     shares_to_buy = int((fresh_capital * alloc_pct) / current_price) if current_price > 0 else 0
-                    actions_to_take.append(f"🟢 *SCALE IN ({int(alloc_pct*100)}% Tranche)*: {symbol}\nBuy {shares_to_buy} shares at ₹{current_price:.2f}.")
+                    actions_to_take.append(f"🟢 <b>SCALE IN ({int(alloc_pct*100)}% Tranche)</b>: {symbol}\nBuy {shares_to_buy} shares at ₹{current_price:.2f}.")
                 else:
-                    actions_to_take.append(f"⚠️ *VALUE TRAP*: {symbol}\nFailed quality filter. Do not buy the dip.")
+                    actions_to_take.append(f"⚠️ <b>VALUE TRAP</b>: {symbol}\nFailed quality filter.")
             elif change_pct >= 25 and current_rsi > 70:
                 sell_pct = 1.0 if change_pct >= 100 else 0.40 if change_pct >= 60 else 0.30 if change_pct >= 45 else 0.20 if change_pct >= 35 else 0.10
                 shares_to_sell = max(1, int(quantity * sell_pct))
-                actions_to_take.append(f"🟡 *TAKE PROFIT*: {symbol}\nSell {shares_to_sell} shares at ₹{current_price:.2f}.")
+                actions_to_take.append(f"🟡 <b>TAKE PROFIT</b>: {symbol}\nSell {shares_to_sell} shares at ₹{current_price:.2f}.")
             elif not long_term_bullish and change_pct < -20:
-                actions_to_take.append(f"🔴 *HIGH-RISK EXIT*: {symbol}\nBroken 200-EMA. Consider exiting.")
-                
+                actions_to_take.append(f"🔴 <b>HIGH-RISK EXIT</b>: {symbol}\nBroken 200-EMA.")
         except Exception:
             pass
 
-    # ==========================================
-    # 3. SMART SORTING & TELEGRAM ALERTS
-    # ==========================================
     if actions_to_take:
         critical_exits = [a for a in actions_to_take if "🔴" in a]
         profit_targets = [a for a in actions_to_take if "🟡" in a]
         buy_setups = [a for a in actions_to_take if "🟢" in a or "⚠️" in a]
 
-        # --- SEND MESSAGE 1: THE MAIN TRIAGE DASHBOARD ---
-        main_message = "📊 *Execution Plan (Trade Triage)*\n\n"
+        main_message = "📊 <b>Execution Plan (Trade Triage)</b>\n\n"
         
         if critical_exits:
-            main_message += "🚨 *PRIORITY 1: CRITICAL EXITS*\n"
+            main_message += "🚨 <b>PRIORITY 1: CRITICAL EXITS</b>\n"
             main_message += "\n\n".join(critical_exits[:5])
             if len(critical_exits) > 5:
-                main_message += f"\n_...and {len(critical_exits) - 5} more exits pending._\n"
+                main_message += f"\n<i>...and {len(critical_exits) - 5} more exits pending.</i>\n"
             main_message += "\n\n"
             
         if profit_targets:
-            main_message += "💰 *PRIORITY 2: PRIME PROFIT TAKING*\n"
+            main_message += "💰 <b>PRIORITY 2: PRIME PROFIT TAKING</b>\n"
             main_message += "\n\n".join(profit_targets[:5])
             if len(profit_targets) > 5:
-                main_message += f"\n_...and {len(profit_targets) - 5} more profit targets._\n"
+                main_message += f"\n<i>...and {len(profit_targets) - 5} more profit targets.</i>\n"
             main_message += "\n\n"
             
         if buy_setups:
-            main_message += "🛒 *PRIORITY 3: BUY SETUPS & TRAPS*\n"
+            main_message += "🛒 <b>PRIORITY 3: BUY SETUPS</b>\n"
             main_message += "\n\n".join(buy_setups[:5])
             if len(buy_setups) > 5:
-                main_message += f"\n_...and {len(buy_setups) - 5} more buy setups._\n"
+                main_message += f"\n<i>...and {len(buy_setups) - 5} more buy setups.</i>\n"
 
         send_telegram_message(main_message)
 
-        # --- SEND MESSAGE 2: OVERFLOW DETAILS (SAFELY CHUNKED) ---
-        chunk_size = 20 # Safe limit to avoid Telegram restrictions
-
+        chunk_size = 20
         if len(critical_exits) > 5:
             time.sleep(1.5) 
             for i in range(5, len(critical_exits), chunk_size):
                 chunk = critical_exits[i : i + chunk_size]
-                msg = "📂 *Full List of Pending Exits (Continued):*\n\n" + "\n\n".join(chunk)
-                send_telegram_message(msg)
+                send_telegram_message("📂 <b>Full List of Exits (Continued):</b>\n\n" + "\n\n".join(chunk))
                 time.sleep(1.5)
             
         if len(profit_targets) > 5:
             time.sleep(1.5)
             for i in range(5, len(profit_targets), chunk_size):
                 chunk = profit_targets[i : i + chunk_size]
-                msg = "📂 *Full List of Profit Targets (Continued):*\n\n" + "\n\n".join(chunk)
-                send_telegram_message(msg)
+                send_telegram_message("📂 <b>Full List of Profits (Continued):</b>\n\n" + "\n\n".join(chunk))
                 time.sleep(1.5)
             
         if len(buy_setups) > 5:
             time.sleep(1.5)
             for i in range(5, len(buy_setups), chunk_size):
                 chunk = buy_setups[i : i + chunk_size]
-                msg = "📂 *Full List of Buy Setups (Continued):*\n\n" + "\n\n".join(chunk)
-                send_telegram_message(msg)
+                send_telegram_message("📂 <b>Full List of Buys (Continued):</b>\n\n" + "\n\n".join(chunk))
                 time.sleep(1.5)
-
     else:
-        send_telegram_message("📊 *Strategic Wealth Report*\nScan complete. No mechanical actions triggered today. Hold steady.")
+        send_telegram_message("📊 <b>Strategic Wealth Report</b>\nScan complete. Hold steady.")
 
 if __name__ == "__main__":
     run_scanner()
