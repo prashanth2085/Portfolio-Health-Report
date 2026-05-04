@@ -24,7 +24,6 @@ def calculate_rsi(prices, window=14):
     return 100 - (100 / (1 + rs))
 
 def run_watchlist_scanner():
-    # Your Exact Smallcase Watchlist (Mapped to Yahoo Finance Tickers)
     watchlist = [
         "AIIL.NS", "AJANTPHARM.NS", "ANGELONE.NS", "APLAPOLLO.NS", "BPCL.NS",
         "CASTROLIND.NS", "COALINDIA.NS", "COLPAL.NS", "ERIS.NS", "GMDCLTD.NS",
@@ -35,9 +34,10 @@ def run_watchlist_scanner():
     ]
     
     actions_to_take = []
+    holding_steady = []
     
     for yf_symbol in watchlist:
-        time.sleep(0.25) # Stealth delay so Yahoo doesn't block the bot
+        time.sleep(0.25) # Stealth delay
         try:
             ticker = yf.Ticker(yf_symbol)
             hist = ticker.history(period="1y")
@@ -53,21 +53,34 @@ def run_watchlist_scanner():
 
             # Watchlist Mechanical Rules
             if current_price > ema_200 and current_rsi <= 40:
-                actions_to_take.append(f"🟢 *BUY / SIP SETUP*: {symbol_name}\nUptrending but currently oversold (RSI: {current_rsi:.1f}). Good spot to add. Price: ₹{current_price:.2f}")
+                actions_to_take.append(f"🟢 *BUY / SIP*: {symbol_name} (₹{current_price:.2f} | RSI: {current_rsi:.0f})")
             elif current_rsi >= 75:
-                actions_to_take.append(f"🟡 *OVERBOUGHT*: {symbol_name}\nRunning very hot (RSI: {current_rsi:.1f}). Consider trimming profits. Price: ₹{current_price:.2f}")
+                actions_to_take.append(f"🟡 *TRIM PROFITS*: {symbol_name} (₹{current_price:.2f} | RSI: {current_rsi:.0f})")
             elif current_price < ema_200 and float(hist['Close'].iloc[-2]) >= float(hist['EMA_200'].iloc[-2]):
-                actions_to_take.append(f"🔴 *TREND BROKEN*: {symbol_name}\nJust crossed below the 200-EMA support. Price: ₹{current_price:.2f}")
+                actions_to_take.append(f"🔴 *TREND BROKEN*: {symbol_name} (₹{current_price:.2f})")
+            else:
+                # Catching the "hidden" stocks that don't need action
+                holding_steady.append(f"▫️ {symbol_name}: ₹{current_price:.2f} (RSI: {current_rsi:.0f})")
                 
         except Exception:
             pass
 
-    # Send Telegram Alert
+    # Build the final Telegram message
+    final_message = "🎯 *Smallcase Watchlist Report*\n\n"
+    
     if actions_to_take:
-        message = "🎯 *Smallcase Watchlist Alert*\n\n" + "\n\n".join(actions_to_take)
-        send_telegram_message(message)
+        final_message += "🚨 *ACTION REQUIRED:*\n" + "\n".join(actions_to_take) + "\n\n"
     else:
-        send_telegram_message("🎯 *Smallcase Watchlist*\nScan complete. No extreme setups triggered today. Hold steady.")
+        final_message += "✅ *No urgent actions required today.*\n\n"
+        
+    if holding_steady:
+        final_message += "🛡 *HOLDING STEADY:*\n" + "\n".join(holding_steady)
+
+    # Telegram has a 4096 character limit. 30 stocks is perfectly safe, but just in case:
+    if len(final_message) > 4000:
+        send_telegram_message(final_message[:4000])
+    else:
+        send_telegram_message(final_message)
 
 if __name__ == "__main__":
     run_watchlist_scanner()
