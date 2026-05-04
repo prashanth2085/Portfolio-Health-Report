@@ -61,7 +61,10 @@ def run_scanner():
         df_clean['Average Price'] = pd.to_numeric(df_clean['Average Price'], errors='coerce')
         df_clean = df_clean[df_clean['Quantity Available'] > 0]
     except Exception as e:
-        print("Error: Could not read holdings.csv. Make sure the file exists in the repo and is named exactly 'holdings.csv'.")
+        # THIS SENDS THE ERROR DIRECTLY TO TELEGRAM
+        error_msg = "⚠️ *Bot Alert*: I woke up, but I cannot find a file named exactly `holdings.csv` in your GitHub repository. Please check the file name!"
+        print(error_msg)
+        send_telegram_message(error_msg)
         return
 
     # System Parameters
@@ -144,7 +147,6 @@ def run_scanner():
         message = "📊 *Strategic Wealth Report: Market Alert*\n\n" + "\n\n".join(actions_to_take)
         send_telegram_message(message)
     else:
-        # Fallback text so you know it ran successfully even if no actions are needed today
         send_telegram_message("📊 *Strategic Wealth Report*\nScan complete. No mechanical actions triggered today. Hold steady.")
 
 if __name__ == "__main__":
