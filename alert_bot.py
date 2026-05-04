@@ -158,11 +158,7 @@ def run_scanner():
     final_message = "📊 *Execution Plan (Trade Triage)*\n\n"
     has_actions = False
 
-    # Sort actions by their score
     actions['exits'] = sorted(actions['exits'], key=lambda x: x['score'])
-    actions['profits'] = sorted(actions['profits'], key=lambda x: x['score'], reverse=True)
-    actions['buys'] = sorted(actions['buys'], key=lambda x: x['score'])
-
     if actions['exits']:
         has_actions = True
         final_message += "🚨 *PRIORITY 1: CRITICAL EXITS (Stop-Loss/Weak)*\n"
@@ -172,6 +168,7 @@ def run_scanner():
             final_message += f"_+ {len(actions['exits']) - 5} more exits pending._\n"
         final_message += "\n"
 
+    actions['profits'] = sorted(actions['profits'], key=lambda x: x['score'], reverse=True)
     if actions['profits']:
         has_actions = True
         final_message += "💰 *PRIORITY 2: PRIME PROFIT TAKING (Overextended)*\n"
@@ -181,6 +178,7 @@ def run_scanner():
             final_message += f"_+ {len(actions['profits']) - 5} more profit targets._\n"
         final_message += "\n"
 
+    actions['buys'] = sorted(actions['buys'], key=lambda x: x['score'])
     if actions['buys']:
         has_actions = True
         final_message += "🌱 *PRIORITY 3: BEST SCALE-IN VALUE (Deepest Dips)*\n"
@@ -189,36 +187,10 @@ def run_scanner():
         if len(actions['buys']) > 5:
             final_message += f"_+ {len(actions['buys']) - 5} more buy targets._\n"
 
-    # Send the main dashboard message
     if has_actions:
         send_telegram_message(final_message)
     else:
         send_telegram_message("📊 *Strategic Wealth Report*\nScan complete. No mechanical actions triggered today. Hold steady.")
-        return # If no actions, stop here so we don't send empty overflow texts
-
-    # ==========================================
-    # 4. SEND OVERFLOW MESSAGES (THE HIDDEN STOCKS)
-    # ==========================================
-    if len(actions['exits']) > 5:
-        time.sleep(1) # Wait 1 second so messages arrive in order
-        overflow_exits = "📂 *Full List of Pending Exits (Continued):*\n"
-        for i, item in enumerate(actions['exits'][5:]):
-            overflow_exits += f"{i+6}. {item['msg']}\n"
-        send_telegram_message(overflow_exits[:4000]) 
-        
-    if len(actions['profits']) > 5:
-        time.sleep(1)
-        overflow_profits = "📂 *Full List of Profit Targets (Continued):*\n"
-        for i, item in enumerate(actions['profits'][5:]):
-            overflow_profits += f"{i+6}. {item['msg']}\n"
-        send_telegram_message(overflow_profits[:4000])
-        
-    if len(actions['buys']) > 5:
-        time.sleep(1)
-        overflow_buys = "📂 *Full List of Buy Setups (Continued):*\n"
-        for i, item in enumerate(actions['buys'][5:]):
-            overflow_buys += f"{i+6}. {item['msg']}\n"
-        send_telegram_message(overflow_buys[:4000])
 
 if __name__ == "__main__":
     run_scanner()
