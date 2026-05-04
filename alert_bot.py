@@ -1,0 +1,151 @@
+import pandas as pd
+import yfinance as yf
+import requests
+import os
+import time
+
+# --- SETUP TELEGRAM ---
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
+
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Telegram Error: {e}")
+
+# --- CUSTOM MATH FUNCTIONS ---
+def calculate_rsi(prices, window=14):
+    delta = prices.diff()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/window, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/window, adjust=False).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_atr(hist, window=14):
+    high_low = hist['High'] - hist['Low']
+    high_close = (hist['High'] - hist['Close'].shift()).abs()
+    low_close = (hist['Low'] - hist['Close'].shift()).abs()
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    return true_range.rolling(window).mean()
+
+def calculate_macd(prices, fast=12, slow=26, signal=9):
+    ema_fast = prices.ewm(span=fast, adjust=False).mean()
+    ema_slow = prices.ewm(span=slow, adjust=False).mean()
+    macd = ema_fast - ema_slow
+    macd_signal = macd.ewm(span=signal, adjust=False).mean()
+    return macd, macd_signal
+
+# --- MAIN ENGINE ---
+def run_scanner():
+    # 1. Read the local holdings file saved in your GitHub repo
+    try:
+        # Looking for the CSV file you uploaded
+        df_raw = pd.read_csv('holdings.csv', header=None)
+        header_row_idx = 0
+        for idx, row in df_raw.iterrows():
+            row_str = " ".join([str(cell).lower() for cell in row.values if pd.notna(cell)])
+            if 'symbol' in row_str or 'instrument' in row_str:
+                header_row_idx = idx
+                break
+        df_clean = pd.read_csv('holdings.csv', skiprows=header_row_idx)
+        df_clean.columns = df_clean.columns.astype(str).str.strip()
+        
+        rename_map = {'Instrument': 'Symbol', 'Avg. cost': 'Average Price', 'Avg Price': 'Average Price', 'Qty.': 'Quantity Available', 'Qty': 'Quantity Available', 'Quantity': 'Quantity Available'}
+        df_clean = df_clean.rename(columns=rename_map)
+        df_clean = df_clean.dropna(subset=['Symbol', 'Average Price']).copy()
+        df_clean['Quantity Available'] = pd.to_numeric(df_clean['Quantity Available'], errors='coerce')
+        df_clean['Average Price'] = pd.to_numeric(df_clean['Average Price'], errors='coerce')
+        df_clean = df_clean[df_clean['Quantity Available'] > 0]
+    except Exception as e:
+        print("Error: Could not read holdings.csv. Make sure the file exists in the repo and is named exactly 'holdings.csv'.")
+        return
+
+    # System Parameters
+    fresh_capital = 100000 
+    min_roe = 0.15 
+    
+    actions_to_take = []
+    
+    # 2. Scan Portfolio
+    for index, row in df_clean.iterrows():
+        symbol = str(row['Symbol']).strip()
+        avg_price = float(row['Average Price'])
+        quantity = int(row['Quantity Available'])
+        yf_symbol = f"{symbol}.NS"
+        
+        time.sleep(0.25) # Stealth delay
+        try:
+            ticker = yf.Ticker(yf_symbol)
+            hist = ticker.history(period="1y")
+            if len(hist) < 50: continue
+            
+            current_price = float(hist['Close'].iloc[-1])
+            change_pct = ((current_price - avg_price) / avg_price) * 100
+            
+            hist['RSI'] = calculate_rsi(hist['Close'])
+            current_rsi = float(hist['RSI'].iloc[-1])
+            hist['EMA_200'] = hist['Close'].ewm(span=200, adjust=False).mean()
+            long_term_bullish = current_price > float(hist['EMA_200'].iloc[-1])
+            
+            hist['ATR'] = calculate_atr(hist)
+            auto_stop_price = avg_price - (3 * float(hist['ATR'].iloc[-1]))
+            
+            macd, macd_signal = calculate_macd(hist['Close'])
+            macd_bullish = float(macd.iloc[-1]) > float(macd_signal.iloc[-1])
+            
+            hist['Avg_Vol_20'] = hist['Volume'].rolling(window=20).mean()
+            current_vol = float(hist['Volume'].iloc[-1])
+            avg_vol = float(hist['Avg_Vol_20'].iloc[-1])
+            high_volume_dump = False
+            if pd.notna(avg_vol) and avg_vol > 0:
+                high_volume_dump = (current_price < float(hist['Open'].iloc[-1])) and (current_vol > (avg_vol * 1.5))
+
+            # Fetch Quality
+            is_high_quality = True
+            for attempt in range(3):
+                try:
+                    info = ticker.info
+                    if info:
+                        roe = info.get('returnOnEquity', 0) or 0
+                        fcf = info.get('freeCashflow', 0) or 0
+                        if info.get('returnOnEquity') is not None:
+                            is_high_quality = (roe >= min_roe) and (fcf > 0)
+                        break
+                except: time.sleep(0.5)
+
+            # Mechanical Logic
+            if current_price <= auto_stop_price:
+                actions_to_take.append(f"🔴 *EXIT (Stop-Loss)*: {symbol}\nSell all {quantity} shares at ₹{current_price:.2f}.")
+            elif change_pct <= -15 and long_term_bullish:
+                if high_volume_dump or (not macd_bullish and current_rsi > 40):
+                    pass # Pause buy
+                elif is_high_quality:
+                    alloc_pct = 0.30 if change_pct <= -35 else 0.25 if change_pct <= -25 else 0.10
+                    shares_to_buy = int((fresh_capital * alloc_pct) / current_price) if current_price > 0 else 0
+                    actions_to_take.append(f"🟢 *SCALE IN ({int(alloc_pct*100)}% Tranche)*: {symbol}\nBuy {shares_to_buy} shares at ₹{current_price:.2f}.")
+                else:
+                    actions_to_take.append(f"⚠️ *VALUE TRAP*: {symbol}\nFailed quality filter. Do not buy the dip.")
+            elif change_pct >= 25 and current_rsi > 70:
+                sell_pct = 1.0 if change_pct >= 100 else 0.40 if change_pct >= 60 else 0.30 if change_pct >= 45 else 0.20 if change_pct >= 35 else 0.10
+                shares_to_sell = max(1, int(quantity * sell_pct))
+                actions_to_take.append(f"🟡 *TAKE PROFIT*: {symbol}\nSell {shares_to_sell} shares at ₹{current_price:.2f}.")
+            elif not long_term_bullish and change_pct < -20:
+                actions_to_take.append(f"🔴 *HIGH-RISK EXIT*: {symbol}\nBroken 200-EMA. Consider exiting.")
+                
+        except Exception:
+            pass
+
+    # 3. Send Telegram Alert if there are actions
+    if actions_to_take:
+        message = "📊 *Strategic Wealth Report: Market Alert*\n\n" + "\n\n".join(actions_to_take)
+        send_telegram_message(message)
+    else:
+        # Fallback text so you know it ran successfully even if no actions are needed today
+        send_telegram_message("📊 *Strategic Wealth Report*\nScan complete. No mechanical actions triggered today. Hold steady.")
+
+if __name__ == "__main__":
+    run_scanner()
