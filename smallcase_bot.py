@@ -4,13 +4,12 @@ import requests
 import os
 import time
 
-# --- SETUP TELEGRAM ---
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload)
     except Exception as e:
@@ -37,7 +36,7 @@ def run_watchlist_scanner():
     holding_steady = []
     
     for yf_symbol in watchlist:
-        time.sleep(0.25) # Stealth delay
+        time.sleep(0.25)
         try:
             ticker = yf.Ticker(yf_symbol)
             hist = ticker.history(period="1y")
@@ -51,38 +50,31 @@ def run_watchlist_scanner():
             
             symbol_name = yf_symbol.replace('.NS', '')
 
-            # Watchlist Mechanical Rules
             if current_price > ema_200 and current_rsi <= 40:
-                actions_to_take.append(f"🟢 *BUY / SIP*: {symbol_name} (₹{current_price:.2f} | RSI: {current_rsi:.0f})")
+                actions_to_take.append(f"🟢 <b>BUY / SIP</b>: {symbol_name} (₹{current_price:.2f} | RSI: {current_rsi:.0f})")
             elif current_rsi >= 75:
-                actions_to_take.append(f"🟡 *TRIM PROFITS*: {symbol_name} (₹{current_price:.2f} | RSI: {current_rsi:.0f})")
+                actions_to_take.append(f"🟡 <b>TRIM PROFITS</b>: {symbol_name} (₹{current_price:.2f} | RSI: {current_rsi:.0f})")
             elif current_price < ema_200 and float(hist['Close'].iloc[-2]) >= float(hist['EMA_200'].iloc[-2]):
-                actions_to_take.append(f"🔴 *TREND BROKEN*: {symbol_name} (₹{current_price:.2f})")
+                actions_to_take.append(f"🔴 <b>TREND BROKEN</b>: {symbol_name} (₹{current_price:.2f})")
             else:
-                # Catching the "hidden" stocks that don't need action
                 holding_steady.append(f"▫️ {symbol_name}: ₹{current_price:.2f} (RSI: {current_rsi:.0f})")
-                
         except Exception:
             pass
 
-        # 1. Send the URGENT Actions Message First
     if actions_to_take:
-        urgent_message = "🚨 *ACTION REQUIRED:*\n" + "\n".join(actions_to_take)
+        urgent_message = "🚨 <b>ACTION REQUIRED:</b>\n" + "\n".join(actions_to_take)
         send_telegram_message(urgent_message)
     else:
-        send_telegram_message("✅ *Smallcase Watchlist: No urgent actions required today.*")
+        send_telegram_message("✅ <b>Smallcase Watchlist: No urgent actions today.</b>")
 
-    # 2. Send the "Holding Steady" list as a completely separate, quiet message
     if holding_steady:
-        time.sleep(1) # Ensures this text arrives second
-        steady_message = "🛡 *HOLDING STEADY (No Action Needed):*\n" + "\n".join(holding_steady)
-        
-        # Check if the holding list is too long for one Telegram message (4096 char limit)
-        if len(steady_message) > 4000:
-            send_telegram_message(steady_message[:4000])
-        else:
+        time.sleep(1.5)
+        chunk_size = 20
+        for i in range(0, len(holding_steady), chunk_size):
+            chunk = holding_steady[i : i + chunk_size]
+            steady_message = "🛡 <b>HOLDING STEADY (No Action Needed):</b>\n" + "\n".join(chunk)
             send_telegram_message(steady_message)
-
+            time.sleep(1.5)
 
 if __name__ == "__main__":
     run_watchlist_scanner()
