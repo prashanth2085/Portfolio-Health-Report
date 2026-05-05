@@ -17,6 +17,15 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Telegram Error: {e}")
 
+def send_telegram_document(text_content, filename="Full_Report.txt"):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    # Create the text file
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(text_content)
+    # Send the file to Telegram
+    with open(filename, 'rb') as f:
+        requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID}, files={'document': f})
+
 def calculate_rsi(prices, window=14):
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).ewm(alpha=1/window, adjust=False).mean()
@@ -179,27 +188,23 @@ def run_scanner():
 
         send_telegram_message(main_message)
 
-        chunk_size = 20
+        # --- SEND MESSAGE 2: THE SILENT TEXT FILE ATTACHMENT ---
+        overflow_text = ""
+        
         if len(critical_exits) > 5:
-            time.sleep(1.5) 
-            for i in range(5, len(critical_exits), chunk_size):
-                chunk = critical_exits[i : i + chunk_size]
-                send_telegram_message("📂 <b>Full List of Exits (Continued):</b>\n\n" + "\n\n".join(chunk))
-                time.sleep(1.5)
+            overflow_text += "🔴 FULL LIST OF PENDING EXITS:\n" + "\n".join(critical_exits[5:]).replace('<b>','').replace('</b>','') + "\n\n"
             
         if len(profit_targets) > 5:
-            time.sleep(1.5)
-            for i in range(5, len(profit_targets), chunk_size):
-                chunk = profit_targets[i : i + chunk_size]
-                send_telegram_message("📂 <b>Full List of Profits (Continued):</b>\n\n" + "\n\n".join(chunk))
-                time.sleep(1.5)
+            overflow_text += "🟡 FULL LIST OF PROFIT TARGETS:\n" + "\n".join(profit_targets[5:]).replace('<b>','').replace('</b>','') + "\n\n"
             
         if len(buy_setups) > 5:
-            time.sleep(1.5)
-            for i in range(5, len(buy_setups), chunk_size):
-                chunk = buy_setups[i : i + chunk_size]
-                send_telegram_message("📂 <b>Full List of Buys (Continued):</b>\n\n" + "\n\n".join(chunk))
-                time.sleep(1.5)
+            overflow_text += "🟢 FULL LIST OF BUY SETUPS:\n" + "\n".join(buy_setups[5:]).replace('<b>','').replace('</b>','') + "\n\n"
+
+        # If there is actually extra data, attach it as a file!
+        if overflow_text:
+            time.sleep(1)
+            send_telegram_document(overflow_text, filename="Hidden_Targets.txt")
+
     else:
         send_telegram_message("📊 <b>Strategic Wealth Report</b>\nScan complete. Hold steady.")
 
