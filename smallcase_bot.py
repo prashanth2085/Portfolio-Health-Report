@@ -23,14 +23,18 @@ def calculate_rsi(prices, window=14):
     return 100 - (100 / (1 + rs))
 
 def run_watchlist_scanner():
+    # Your Updated Smallcase Watchlist (Mapped to Yahoo Finance)
     watchlist = [
-        "AIIL.NS", "AJANTPHARM.NS", "ANGELONE.NS", "APLAPOLLO.NS", "BPCL.NS",
-        "CASTROLIND.NS", "COALINDIA.NS", "COLPAL.NS", "ERIS.NS", "GMDCLTD.NS",
-        "GOLDBEES.NS", "IPCALAB.NS", "JUNIORBEES.NS", "KPITTECH.NS", "KSB.NS", 
-        "MARICO.NS", "MINDSPACE.NS", "MOTHERSON.NS", "NATCOPHARM.NS", "NESTLEIND.NS", 
-        "NIFTYBEES.NS", "NXST.NS", "OIL.NS", "RAINBOW.NS", "SILVERBEES.NS", 
-        "TCS.NS", "TORNTPHARM.NS", "VGUARD.NS", "VIJAYA.NS"
+        "AIIL.NS", "AJANTPHARM.NS", "ANGELONE.NS", "APLAPOLLO.NS", "BHARTIARTL.NS", "BPCL.NS", 
+        "CASTROLIND.NS", "COALINDIA.NS", "COLPAL.NS", "ERIS.NS", "GMDCLTD.NS", "GOLDBEES.NS", 
+        "HUDCO.NS", "ICICIBANK.NS", "IPCALAB.NS", "JUNIORBEES.NS", "KPITTECH.NS", "KSB.NS", 
+        "LT.NS", "MARICO.NS", "MINDSPACE.NS", "MOTHERSON.NS", "NATCOPHARM.NS", "NESTLEIND.NS", 
+        "NIFTYBEES.NS", "NXST.NS", "OIL.NS", "RAINBOW.NS", "RELIANCE.NS", "SBIN.NS", "SCI.NS", 
+        "SILVERBEES.NS", "SANGHVIMOV.NS", "TCS.NS", "TECHM.NS", "TORNTPHARM.NS", "VGUARD.NS", "VIJAYA.NS", "WABAG.NS"
     ]
+    
+    actions_to_take = []
+    holding_steady = []
     
     actions_to_take = []
     holding_steady = []
