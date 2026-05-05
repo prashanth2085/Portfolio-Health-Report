@@ -11,9 +11,20 @@ def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
-        requests.post(url, json=payload)
+        response = requests.post(url, json=payload)
+        if response.status_code != 200:
+            print(f"Telegram API Error: {response.text}")
     except Exception as e:
         print(f"Telegram Error: {e}")
+
+def send_telegram_document(text_content, filename="Holding_Steady.txt"):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    # Create the text file
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(text_content)
+    # Send the file to Telegram
+    with open(filename, 'rb') as f:
+        requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID}, files={'document': f})
 
 def calculate_rsi(prices, window=14):
     delta = prices.diff()
@@ -32,9 +43,6 @@ def run_watchlist_scanner():
         "NIFTYBEES.NS", "NXST.NS", "OIL.NS", "RAINBOW.NS", "RELIANCE.NS", "SBIN.NS", "SCI.NS", 
         "SILVERBEES.NS", "SANGHVIMOV.NS", "TCS.NS", "TECHM.NS", "TORNTPHARM.NS", "VGUARD.NS", "VIJAYA.NS", "WABAG.NS"
     ]
-    
-    actions_to_take = []
-    holding_steady = []
     
     actions_to_take = []
     holding_steady = []
@@ -71,14 +79,11 @@ def run_watchlist_scanner():
     else:
         send_telegram_message("✅ <b>Smallcase Watchlist: No urgent actions today.</b>")
 
+    # --- SEND MESSAGE 2: THE SILENT TEXT FILE ATTACHMENT ---
     if holding_steady:
         time.sleep(1.5)
-        chunk_size = 20
-        for i in range(0, len(holding_steady), chunk_size):
-            chunk = holding_steady[i : i + chunk_size]
-            steady_message = "🛡 <b>HOLDING STEADY (No Action Needed):</b>\n" + "\n".join(chunk)
-            send_telegram_message(steady_message)
-            time.sleep(1.5)
+        steady_text = "🛡 HOLDING STEADY (No Action Needed):\n\n" + "\n".join(holding_steady)
+        send_telegram_document(steady_text, filename="Holding_Steady.txt")
 
 if __name__ == "__main__":
     run_watchlist_scanner()
