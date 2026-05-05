@@ -76,12 +76,27 @@ def run_scanner():
         send_telegram_message(f"⚠️ <b>Bot Alert</b>: Error reading file: {e}")
         return
 
-    fresh_capital = 100000 
+      fresh_capital = 100000 
     min_roe = 0.15 
     actions_to_take = []
     
+    # --- RING-FENCED STOCKS (SMALLCASE & ETFs) ---
+    smallcase_ignore_list = [
+        'AIIL', 'AJANTPHARM', 'ANGELONE', 'APLAPOLLO', 'BHARTIARTL', 'BPCL', 
+        'CASTROLIND', 'COALINDIA', 'COLPAL', 'ERIS', 'GMDCLTD', 'GOLDCASE', 
+        'HUDCO', 'ICICIBANK', 'IPCALAB', 'JUNIORBEES', 'KPITTECH', 'KSB', 
+        'LT', 'MARICO', 'MINDSPACE-RR', 'MOTHERSON', 'NATCOPHARM', 'NESTLEIND', 
+        'NIFTYBEES', 'NXST-RR', 'OIL', 'RAINBOW', 'RELIANCE', 'SBIN', 'SCI', 
+        'SILVERCASE', 'SANGHVIMOV', 'TCS', 'TECHM', 'TORNTPHARM', 'VGUARD', 'VIJAYA', 'WABAG'
+    ]
+    
     for index, row in df_clean.iterrows():
         symbol = str(row['Symbol']).strip()
+        
+        # IF STOCK IS IN THE IGNORE LIST, SKIP IT ENTIRELY
+        if symbol in smallcase_ignore_list:
+            continue
+            
         avg_price = float(row['Average Price'])
         quantity = int(row['Quantity Available'])
         yf_symbol = f"{symbol}.NS"
