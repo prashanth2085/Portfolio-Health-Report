@@ -9,7 +9,6 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    # Switched to HTML parsing which is 100x safer for Telegram
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         response = requests.post(url, json=payload)
@@ -76,7 +75,7 @@ def run_scanner():
         send_telegram_message(f"⚠️ <b>Bot Alert</b>: Error reading file: {e}")
         return
 
-      fresh_capital = 100000 
+    fresh_capital = 100000 
     min_roe = 0.15 
     actions_to_take = []
     
