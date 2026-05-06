@@ -86,6 +86,11 @@ def run_scanner():
 
     fresh_capital = 100000 
     min_roe = 0.15 
+    
+    # --- NEW: Portfolio Trackers ---
+    total_invested_capital = 0
+    total_current_value = 0
+    
     actions_to_take = []
     
     # --- RING-FENCED STOCKS (SMALLCASE & ETFs) ---
@@ -100,13 +105,10 @@ def run_scanner():
     
     for index, row in df_clean.iterrows():
         symbol = str(row['Symbol']).strip()
-        
-        # IF STOCK IS IN THE IGNORE LIST, SKIP IT ENTIRELY
-        if symbol in smallcase_ignore_list:
-            continue
-            
         avg_price = float(row['Average Price'])
         quantity = int(row['Quantity Available'])
+        
+        # We process the math for ALL stocks to get accurate P&L
         yf_symbol = f"{symbol}.NS"
         
         time.sleep(0.25)
@@ -117,6 +119,14 @@ def run_scanner():
             
             current_price = float(hist['Close'].iloc[-1])
             change_pct = ((current_price - avg_price) / avg_price) * 100
+            
+            # --- NEW: Add to our running totals ---
+            total_invested_capital += (avg_price * quantity)
+            total_current_value += (current_price * quantity)
+
+            # IF STOCK IS IN THE IGNORE LIST, SKIP ACTION ALERTS (But keep the math above)
+            if symbol in smallcase_ignore_list:
+                continue
             
             hist['RSI'] = calculate_rsi(hist['Close'])
             current_rsi = float(hist['RSI'].iloc[-1])
@@ -159,12 +169,19 @@ def run_scanner():
         except Exception:
             pass
 
+    # Calculate Overall P&L
+    overall_pl_pct = 0
+    if total_invested_capital > 0:
+        overall_pl_pct = ((total_current_value - total_invested_capital) / total_invested_capital) * 100
+
     if actions_to_take:
         critical_exits = [a for a in actions_to_take if "🔴" in a]
         profit_targets = [a for a in actions_to_take if "🟡" in a]
         buy_setups = [a for a in actions_to_take if "🟢" in a or "⚠️" in a]
 
-        main_message = "📊 <b>Execution Plan (Trade Triage)</b>\n\n"
+        # --- NEW: Upgraded Header with P&L ---
+        main_message = f"📊 <b>Execution Plan | Live P&L: {overall_pl_pct:+.2f}%</b>\n"
+        main_message += f"💰 <i>Est. Value: ₹{total_current_value:,.0f}</i>\n\n"
         
         if critical_exits:
             main_message += "🚨 <b>PRIORITY 1: CRITICAL EXITS</b>\n"
@@ -189,24 +206,31 @@ def run_scanner():
         send_telegram_message(main_message)
 
         # --- SEND MESSAGE 2: THE SILENT TEXT FILE ATTACHMENT ---
-        overflow_text = ""
+        overflow_text = f"PORTFOLIO OVERFLOW REPORT\nLive P&L: {overall_pl_pct:+.2f}%\nTotal Est. Value: Rs. {total_current_value:,.0f}\n\n"
+        has_overflow = False
         
         if len(critical_exits) > 5:
             overflow_text += "🔴 FULL LIST OF PENDING EXITS:\n" + "\n".join(critical_exits[5:]).replace('<b>','').replace('</b>','') + "\n\n"
+            has_overflow = True
             
         if len(profit_targets) > 5:
             overflow_text += "🟡 FULL LIST OF PROFIT TARGETS:\n" + "\n".join(profit_targets[5:]).replace('<b>','').replace('</b>','') + "\n\n"
+            has_overflow = True
             
         if len(buy_setups) > 5:
             overflow_text += "🟢 FULL LIST OF BUY SETUPS:\n" + "\n".join(buy_setups[5:]).replace('<b>','').replace('</b>','') + "\n\n"
+            has_overflow = True
 
         # If there is actually extra data, attach it as a file!
-        if overflow_text:
+        if has_overflow:
             time.sleep(1)
             send_telegram_document(overflow_text, filename="Hidden_Targets.txt")
 
     else:
-        send_telegram_message("📊 <b>Strategic Wealth Report</b>\nScan complete. Hold steady.")
+        steady_msg = f"📊 <b>Strategic Wealth Report | Live P&L: {overall_pl_pct:+.2f}%</b>\n"
+        steady_msg += f"💰 <i>Est. Value: ₹{total_current_value:,.0f}</i>\n\n"
+        steady_msg += "Scan complete. No mechanical actions triggered today. Hold steady."
+        send_telegram_message(steady_msg)
 
 if __name__ == "__main__":
     run_scanner()
